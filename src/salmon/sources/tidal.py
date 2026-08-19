@@ -1,8 +1,12 @@
+import asyncio
+import random
 import re
+from http import HTTPStatus
 from time import monotonic
 from typing import Any
 
 import aiohttp
+import asyncclick as click
 import msgspec
 
 from salmon import cfg
@@ -15,6 +19,28 @@ QUALITY_MAP = {
     "DOLBY_ATMOS": "DOLBY_ATMOS",
     "MP3_320": "MP3",
 }
+
+_MAX_RATE_LIMIT_RETRIES = 8
+_MAX_RETRY_AFTER = 60.0
+
+
+class _TidalRateLimitError(Exception):
+    def __init__(self, retry_after: float | None = None):
+        self.retry_after = retry_after
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        return min(max(float(value), 0.0), _MAX_RETRY_AFTER)
+    except ValueError:
+        return None
+
+
+def _backoff(attempt: int) -> float:
+    base = min(2**attempt, _MAX_RETRY_AFTER)
+    return base * (0.5 + random.random())
 
 
 def parse_quality(media_tags: list[str]) -> str | None:
@@ -34,29 +60,67 @@ class TidalBase(BaseScraper):
 
     _access_token: str | None = None
     _token_expiry: float = 0.0
+    _cooldown_until: float = 0.0
+
+    @classmethod
+    def _set_cooldown(cls, seconds: float) -> None:
+        cls._cooldown_until = max(cls._cooldown_until, monotonic() + seconds)
+
+    @classmethod
+    async def _wait_for_cooldown(cls) -> None:
+        remaining = cls._cooldown_until - monotonic()
+        if remaining > 0:
+            click.secho(f"Tidal rate limited, waiting {remaining:.1f}s...", fg="yellow")
+            await asyncio.sleep(remaining)
+
+    @classmethod
+    async def _with_rate_limit_retry(cls, request_fn):
+        last_error: _TidalRateLimitError | None = None
+        for attempt in range(_MAX_RATE_LIMIT_RETRIES):
+            await cls._wait_for_cooldown()
+            try:
+                return await request_fn()
+            except _TidalRateLimitError as e:
+                wait = e.retry_after if e.retry_after is not None else _backoff(attempt)
+                cls._set_cooldown(wait)
+                last_error = e
+        raise ScrapeError("Tidal rate limit persisted after retries.") from last_error
 
     @classmethod
     async def _ensure_token(cls) -> str:
         """Return a valid OAuth2 access token, fetching one if needed."""
         if cls._access_token and monotonic() < cls._token_expiry - 60:
             return cls._access_token
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with (
-            aiohttp.ClientSession(timeout=timeout) as session,
-            session.post(
-                "https://auth.tidal.com/v1/oauth2/token",
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": cfg.metadata.tidal.client_id,
-                    "client_secret": cfg.metadata.tidal.client_secret,
-                },
-            ) as resp,
-        ):
-            data = msgspec.json.decode(await resp.read())
+
+        async def _fetch() -> dict:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with (
+                aiohttp.ClientSession(timeout=timeout) as session,
+                session.post(
+                    "https://auth.tidal.com/v1/oauth2/token",
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": cfg.metadata.tidal.client_id,
+                        "client_secret": cfg.metadata.tidal.client_secret,
+                    },
+                ) as resp,
+            ):
+                if resp.status == HTTPStatus.TOO_MANY_REQUESTS:
+                    raise _TidalRateLimitError(_parse_retry_after(resp.headers.get("Retry-After")))
+                return msgspec.json.decode(await resp.read())
+
+        data = await cls._with_rate_limit_retry(_fetch)
         token = data["access_token"]
         cls._access_token = token
         cls._token_expiry = monotonic() + data["expires_in"]
         return token
+
+    async def handle_json_response(self, resp: aiohttp.ClientResponse) -> dict:
+        if resp.status == HTTPStatus.TOO_MANY_REQUESTS:
+            retry_after = _parse_retry_after(resp.headers.get("Retry-After"))
+            await resp.read()
+            raise _TidalRateLimitError(retry_after)
+        return await super().handle_json_response(resp)
 
     async def get_json(self, url: str, params: dict | None = None, headers: dict | None = None) -> dict:
         token = await self._ensure_token()
@@ -65,7 +129,12 @@ class TidalBase(BaseScraper):
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.api+json",
         }
-        return await super().get_json(url, params=params, headers=headers)
+        parent_get_json = super().get_json
+
+        async def _do() -> dict:
+            return await parent_get_json(url, params=params, headers=headers)
+
+        return await self._with_rate_limit_retry(_do)
 
     @classmethod
     def format_url(cls, rls_id: Any, rls_name: str | None = None, url: str | None = None) -> str:
