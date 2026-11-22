@@ -506,9 +506,16 @@ class PlacedFolders:
     def skipped_over(self, folder: str) -> str | None:
         """A destination a tracker was skipped over that needs folder, or None: it is or holds it, or is or holds a
         link into it, which would lead nowhere without it. Read as they are now.
+
+        A data directory is never walked for links: it may hold every album of a tracker.
         """
         for dest in self._skipped:
-            if holds(dest, folder) or any(holds(folder, os.path.realpath(link)) for link in links_in(dest)):
+            if holds(dest, folder):
+                return dest
+            # Not through a whole data directory: a link in one is any other symlink to the album (see the PR's limits).
+            if data_directory_refusal(dest) is None and any(
+                holds(folder, os.path.realpath(link)) for link in links_in(dest)
+            ):
                 return dest
         return None
 

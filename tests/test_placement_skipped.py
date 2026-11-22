@@ -16,7 +16,7 @@ from helpers.album_files import album
 from helpers.tracker_dirs import answer, tracker_dirs
 
 from salmon import cfg, interaction
-from salmon.placement import PlacedFolders, PlacementError
+from salmon.placement import PlacedFolders, PlacementDeclined, PlacementError
 
 Arrange = Callable[[SimpleNamespace], None]
 
@@ -148,3 +148,38 @@ def test_a_folder_that_was_replaced_needs_nothing(monkeypatch, dirs) -> None:
 
     assert Path(made) == dirs.dest
     assert placed.skipped_over(str(dirs.given)) is None
+
+
+# --- A data directory a tracker was skipped over ---------------------------------------------------------------------
+
+
+def _skipped_over_a_data_directory(monkeypatch, tmp_path: Path) -> tuple[PlacedFolders, SimpleNamespace]:
+    """OPS, with no folder of its own, declined the global one's `red`, which is RED's folder of albums."""
+    dirs = tracker_dirs(monkeypatch, tmp_path, "RED")
+    monkeypatch.setattr(cfg.directory, "download_directory", str(tmp_path / "data"))
+    dirs.held = [album(dirs.red / name) for name in ("One", "Two")]
+    placed = PlacedFolders()
+    with pytest.raises(PlacementDeclined, match="download_directory"):
+        anyio.run(placed.place, str(album(tmp_path / "in" / "red")), "OPS")
+    return placed, dirs
+
+
+def test_a_data_directory_a_tracker_was_skipped_over_is_not_walked(monkeypatch, tmp_path) -> None:
+    placed, dirs = _skipped_over_a_data_directory(monkeypatch, tmp_path)
+    walked: list[str] = []
+    walk = os.walk
+
+    def recording(top: Any, *args: Any, **kwargs: Any) -> Any:
+        walked.append(os.fspath(top))
+        return walk(top, *args, **kwargs)
+
+    monkeypatch.setattr(os, "walk", recording)
+
+    assert placed.skipped_over(str(tmp_path / "in" / "red")) is None
+    assert str(dirs.red) not in walked
+
+
+def test_a_data_directory_a_tracker_was_skipped_over_still_needs_an_album_in_it(monkeypatch, tmp_path) -> None:
+    placed, dirs = _skipped_over_a_data_directory(monkeypatch, tmp_path)
+
+    assert placed.skipped_over(str(dirs.held[0])) == str(dirs.red)
