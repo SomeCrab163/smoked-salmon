@@ -15,8 +15,8 @@ import tempfile
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Self
 
 import asyncclick as click
@@ -33,6 +33,9 @@ REPLACED_PREFIX = ".salmon-replaced-"
 SHARED_NOTE = " (it shares files with another folder through a hardlink or symlink: a torrent may seed from it)"
 
 Ignore = Callable[[str, list[str]], Iterable[str]]
+# Takes a destination for the running job before it may be replaced (salmon web's lock): why it can't, or None.
+Claim = Callable[[str], Awaitable[str | None]]
+_claimer: ContextVar[Claim | None] = ContextVar("placement_claim", default=None)
 
 
 class PlacementError(UploadError):
@@ -53,6 +56,29 @@ class PlacementDeclined(PlacementError):
 
 class _LinksUnavailable(Exception):
     """Not an OSError: copytree would collect one and go on (and lose its errno)."""
+
+
+@contextmanager
+def claiming(take: Claim) -> Iterator[None]:
+    """Run the block, and every task it starts, with each destination taken through `take` before it may be replaced.
+
+    The command, alone at its terminal, sets none and needs no lock.
+    """
+    token = _claimer.set(take)
+    try:
+        yield
+    finally:
+        _claimer.reset(token)
+
+
+async def claim(dest: str) -> None:
+    """Take dest for the running job.
+
+    Raises:
+        PlacementDeclined: Another job works on it, in it or on a folder holding it.
+    """
+    if (take := _claimer.get()) is not None and (refusal := await take(dest)) is not None:
+        raise PlacementDeclined(f"Not using {dest}: {refusal}.")
 
 
 def ensure_directory(folder: str) -> None:
@@ -153,12 +179,15 @@ async def place_folder(
     """
     dryrun.refuse(f"put {src} at {dest}")
     _refuse(src, dest)
+    await claim(dest)
     parent = os.path.dirname(dest) or os.curdir
     ensure_directory(parent)
     try:
         with _building_in(parent) as temp:
             built = os.path.join(temp, os.path.basename(dest))
             linked = await _build(src, built, dest, ignore)
+            # Again: a job can have started in it while a question waited or the copy was made.
+            await claim(dest)
             _move_into_place(src, built, dest, replacing)
     except OSError as error:  # shutil.Error is one
         raise PlacementError(f"Could not make {dest} from {src}: {_reason(error)}") from error
@@ -364,15 +393,13 @@ def _remove_replaced(dest: str, aside: str) -> None:
 class PlacedFolders:
     """What one run placed, and what it must never replace."""
 
-    def __init__(self, *keep: str, claim_folder: Callable[[Path], Awaitable[str | None]] | None = None) -> None:
+    def __init__(self, *keep: str) -> None:
         """
         Args:
             keep: The folders the run works from: its source, the album given, the first folder.
-            claim_folder: Takes a destination before it may be replaced (salmon web's lock): why not, or None.
         """
         self._keep = keep
         self._declined: list[str] = []  # The destinations declined for a folder the run works from
-        self._claim_folder = claim_folder
         self._made: dict[str, str] = {}  # Each folder the run made, and the one it was made from
         self._conversion_dirs: dict[tuple[str, str], str] = {}
 
@@ -418,8 +445,7 @@ class PlacedFolders:
         if (reason := overlap(dest, src, *self._keep, *self._made)) is not None:
             self._declined.append(dest)
             raise PlacementDeclined(f"Not using {dest}: {reason}.", kept=True)
-        if self._claim_folder is not None and (refusal := await self._claim_folder(Path(dest))):
-            raise PlacementDeclined(f"Not using {dest}: {refusal}.")
+        await claim(dest)
         replacing = await _agree_to_replace(dest) if os.path.lexists(dest) else None
         await place_folder(src, dest, replacing=replacing)
         self._made[dest] = src

@@ -134,13 +134,17 @@ async def _confirm_replacing(
 
     Raises:
         UploadError: It must not be replaced, or the user kept it.
-        click.Abort: A placement that must not replace it, or under -yyy.
+        click.Abort: A placement that must not replace it (another salmon web job's included), or under -yyy.
     """
     if (refusal := _replace_refusal(new_path, original, source)) is not None:
         raise UploadError(refusal)
     replacing = None
     if placing:
         _abort_unless_placeable(path, new_path, original, source)
+        try:
+            await placement.claim(new_path)  # Before the question, as for a later tracker's folder
+        except PlacementDeclined as declined:
+            _abort(str(declined))
         # confirm doesn't answer by itself: it would wait at the terminal.
         if await interaction.assume_defaults():
             _abort(f"Not replacing {new_path} with -yyy (upload.yes_all): it exists already.")

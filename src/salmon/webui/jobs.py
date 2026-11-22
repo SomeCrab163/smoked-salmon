@@ -4,8 +4,8 @@ A step that blocks (hashing a torrent, copying an album, waiting for an answer) 
 server's loop goes on serving, and sending every job's tracker requests (see ``trackers.account``). At most
 ``[web] max_jobs`` jobs run at once; the others wait their turn in the order they came, and a job waits while
 another works on the same album folder, the folder it was started on or one it found once running
-(``claim_folder``). A question left unanswered for 30 minutes stops its job. Jobs and their history live in memory
-only, and so many of them: the oldest finished jobs are dropped.
+(``claim_folder``, ``claim_destination``). A question left unanswered for 30 minutes stops its job. Jobs and their
+history live in memory only, and so many of them: the oldest finished jobs are dropped.
 
 Everything about a job is changed on the server's loop: its thread hands each change over. Every event goes through
 the egress filter where it is made, so what is kept and sent holds no secret.
@@ -34,7 +34,8 @@ from typing import Any, Literal
 import asyncclick as click
 import msgspec
 
-from salmon import cfg, dryrun, interaction, prepared, ssrf
+from salmon import cfg, dryrun, interaction, placement, prepared, ssrf
+from salmon.config.validations import holds
 from salmon.errors import UnknownOutcomeError
 from salmon.prepared import Prepared
 from salmon.webui import output
@@ -178,7 +179,8 @@ class Job:
         self._answer: concurrent.futures.Future[Any] | None = None
         # The folders the job made with own_folder, resolved: removed with its spectrals.
         self._own_folders: list[str] = []
-        # The album folders the job claimed once running (claim_folder), resolved; changed on the server's loop.
+        # The folders the job claimed once running (claim_folder, claim_destination), resolved; changed on the
+        # server's loop.
         self._claimed: set[str] = set()
         # What its preparation made (JobKind.prepare), once one started; and the preparation's loop and task, from its
         # thread, while it runs.
@@ -192,6 +194,10 @@ class Job:
     def holds(self, folder: str) -> bool:
         """Whether the job works on the album folder (resolved): the one it was started on, or one it claimed."""
         return folder == self.folder or folder in self._claimed
+
+    def overlaps(self, folder: str) -> bool:
+        """Whether a folder the job works on is `folder`, is in it or holds it, however either is spelled."""
+        return any(holds(held, folder) or holds(folder, held) for held in (self.folder, *self._claimed) if held)
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -307,6 +313,25 @@ async def claim_folder(folder: str) -> str | None:
     claimed: concurrent.futures.Future[str | None] = concurrent.futures.Future()
     manager._call(manager._claim, job, os.path.realpath(folder), claimed)
     return await asyncio.wrap_future(claimed)
+
+
+async def claim_destination(folder: str) -> str | None:
+    """Claim a folder the running job may replace (``placement.claiming``) until it ends.
+
+    Unlike ``claim_folder``, it is refused also for another job's folder inside it or holding it: replacing it would
+    delete what that job works on. From then on a job started on that folder itself waits, as for any claim.
+
+    Returns:
+        None once the job holds the folder, or when no salmon web job runs here. Otherwise why not.
+    """
+    job, manager = _running_job.get(), _running_manager.get()
+    if job is None or manager is None:
+        return None
+    claimed: concurrent.futures.Future[str | None] = concurrent.futures.Future()
+    manager._call(manager._claim, job, os.path.realpath(folder), claimed, True)
+    if (holder := await asyncio.wrap_future(claimed)) is None:
+        return None
+    return f"another job works on it, in it or on a folder holding it ({holder}): try again once that job has ended"
 
 
 def _remove_own_folders(folders: list[str]) -> None:
@@ -668,6 +693,7 @@ class JobManager:
                 # The URLs a job fetches come from the browser and from store pages: public addresses only.
                 ssrf.public_only(),
                 prepared.using(job.prepared),
+                placement.claiming(claim_destination),
             ):
                 try:
                     result = await job.kind.run(job.params)
@@ -733,8 +759,11 @@ class JobManager:
             job.status = "running"
         self._publish({"event": "answered", "job_id": job.id, "question_id": question_id, "status": job.status})
 
-    def _claim(self, job: Job, folder: str, claimed: concurrent.futures.Future[str | None]) -> None:
-        holder = next((other for other in self._running if other is not job and other.holds(folder)), None)
+    def _claim(
+        self, job: Job, folder: str, claimed: concurrent.futures.Future[str | None], replacing: bool = False
+    ) -> None:
+        others = (other for other in self._running if other is not job)
+        holder = next((other for other in others if (other.overlaps if replacing else other.holds)(folder)), None)
         if holder is None:
             job._claimed.add(folder)
         # Cancelled: the job stopped waiting, and ends.

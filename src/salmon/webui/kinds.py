@@ -712,8 +712,8 @@ async def cross_upload(params: CrossUploadParams) -> dict[str, Any]:
 
     The job works on one album folder at a time, as every job does: the path given, else each release's folder from
     when SOURCE names it until the job ends (``claim_folder``), and its folder in TARGET's directory from before that
-    may be replaced. A release whose folder another running job works on is not cross-uploaded, as one that fails a
-    check is not; a job started on that folder later waits for this one.
+    may be replaced (``claim_destination``). A release whose folder another running job works on is not
+    cross-uploaded, as one that fails a check is not; a job started on that folder later waits for this one.
 
     Returns:
         SOURCE, TARGET, the torrent IDs, each torrent uploaded (none in a dry run), and whether a seedbox step (a copy,

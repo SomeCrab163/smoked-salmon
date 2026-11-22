@@ -338,9 +338,9 @@ async def run_cross_upload(options: CrossUploadOptions, *, claim_folder: FolderC
     A dry run and -yyy are the caller's, set around the call (``dryrun.mode``, ``interaction.assuming_defaults``).
 
     Args:
-        claim_folder: Takes each release's album folder once it is known, and its folder in TARGET's directory
-            before that may be replaced; a release whose folder it refuses is not cross-uploaded. None claims
-            nothing, as the command, alone at its terminal, needs no lock.
+        claim_folder: Takes each release's album folder once it is known; a release whose folder it refuses is
+            not cross-uploaded. None claims nothing, as the command, alone at its terminal, needs no lock. Its folder
+            in TARGET's directory is taken as every placement takes one (``placement.claiming``).
 
     Raises:
         click.UsageError: An INPUT is none of a SOURCE torrent ID, URL or .torrent file. Nothing is sent.
@@ -454,7 +454,7 @@ async def _run(
     with scratch as scratch_dir, dryrun.writing_into(scratch_dir):
         seedbox = UploadManager(cross_upload=True)
         uploaded: list[str] = []
-        placed = PlacedFolders(*(str(release.path) for release in releases), claim_folder=claim_folder)
+        placed = PlacedFolders(*(str(release.path) for release in releases))
         skipped: list[str] = []
         try:
             for release in releases:

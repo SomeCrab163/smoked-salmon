@@ -26,7 +26,7 @@ from test_cross_upload import (
 from torf import Torrent
 
 import salmon.cross_upload as cross_upload_module
-from salmon import cfg, interaction
+from salmon import cfg, interaction, placement
 from salmon.config.validations import Seedbox
 from salmon.cross_upload import CrossUploadRefused, _release_path
 from salmon.uploader.seedbox import UploadManager
@@ -329,24 +329,21 @@ def test_the_destination_is_claimed_before_it_may_be_replaced(monkeypatch, dirs)
     claimed: list[Path] = []
     asked: list[str] = []
 
-    async def claim(folder: Path) -> str | None:
-        claimed.append(folder)
-        return "another job works on it" if folder == dirs.red / FOLDER else None
+    async def claim(folder: str) -> str | None:
+        claimed.append(Path(folder))
+        return "another job works on it"
 
     async def confirm(text: str, **kwargs: Any) -> bool:
         asked.append(text)
         return bool(kwargs.get("default"))
 
-    run_cross_upload = cross_upload_module.run_cross_upload
-    monkeypatch.setattr(
-        cross_upload_module, "run_cross_upload", lambda options: run_cross_upload(options, claim_folder=claim)
-    )
     monkeypatch.setattr(interaction, "confirm", confirm)
 
-    run = _cross_upload(monkeypatch, dirs, [str(TORRENT_ID)], input="\n", prepare=_source_has(source))
+    with placement.claiming(claim):
+        run = _cross_upload(monkeypatch, dirs, [str(TORRENT_ID)], input="\n", prepare=_source_has(source))
 
     assert run.result.exit_code == 1, run.output
-    assert claimed == [source.resolve(), dirs.red / FOLDER]  # salmon web's lock takes both
+    assert claimed == [dirs.red / FOLDER]
     assert not [text for text in asked if "would you like to replace it?" in text]
     assert contents(dirs.red / FOLDER) == before
     assert run.target.posts() == []

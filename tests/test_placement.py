@@ -546,12 +546,12 @@ def test_a_folder_salmon_web_cannot_claim_is_declined_before_asking(monkeypatch,
     asked = answer(monkeypatch)
     claimed: list[Path] = []
 
-    async def claim(folder: Path) -> str:
-        claimed.append(folder)
+    async def claim(folder: str) -> str:
+        claimed.append(Path(folder))
         return "another job works on it"
 
-    with pytest.raises(PlacementDeclined, match="another job"):
-        _place(dirs, PlacedFolders(claim_folder=claim))
+    with placement.claiming(claim), pytest.raises(PlacementDeclined, match="another job"):
+        _place(dirs)
 
     assert claimed == [dirs.dest]
     assert asked == []
