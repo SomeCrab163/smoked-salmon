@@ -378,3 +378,18 @@ def test_a_dry_run_makes_nothing_and_never_asks_to_replace(monkeypatch, dirs, ex
     assert ("already exists" in run.output) is exists
     assert "would you like to replace it?" not in run.output
     assert run.target.posts() == []
+
+
+def test_the_plan_is_shown_for_a_targets_directory_salmon_may_not_read(monkeypatch, dirs) -> None:
+    source = _album(dirs.ops / FOLDER)
+    dirs.red.mkdir()
+    dirs.red.chmod(0o000)
+    try:
+        run = _cross_upload(
+            monkeypatch, dirs, [str(TORRENT_ID), "--dry-run", "-yyy"], input="\n", prepare=_source_has(source)
+        )
+    finally:
+        dirs.red.chmod(0o755)
+
+    assert run.result.exit_code == 0, run.output
+    assert f"to: {dirs.red / FOLDER}" in run.output

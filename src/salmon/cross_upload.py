@@ -16,6 +16,7 @@ DIC's rules and API answers are is not checked against DIC itself: where it matt
 """
 
 import html
+import os
 import re
 import unicodedata
 from collections.abc import Awaitable, Callable, Iterable, Iterator
@@ -1310,7 +1311,7 @@ def _print_plan(
 
 def _already_there(dest: str) -> str:
     """What the plan adds of a destination that exists."""
-    if not Path(dest).is_symlink() and not Path(dest).exists():
+    if not os.path.lexists(dest):  # Not Path.exists, which raises for a directory salmon may not read
         return ""
     return " (already exists: salmon asks before replacing it, and with -yyy skips the release)"
 

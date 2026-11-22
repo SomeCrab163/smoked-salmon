@@ -308,7 +308,7 @@ class Seedbox(BaseStruct):
     enabled: bool = True  # false skips this seedbox
     url: str = ""  # Name of remote in rclone
     type: Literal["local", "rclone"] = "local"
-    directory: str = ""  # Directory when adding torrent to download client. Empty on a local one: the tracker's
+    directory: str = ""  # Directory when adding torrent to download client. Empty on a local one: the tracker's folder
     # Trackers this seedbox serves; empty means every tracker, so existing configs are unchanged.
     trackers: list[str] = msgspec.field(default_factory=list)
     flac_only: bool = False  # if true, only upload FLAC files
