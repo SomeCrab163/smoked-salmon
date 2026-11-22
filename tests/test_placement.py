@@ -854,3 +854,87 @@ def test_whichever_call_fails_the_destination_is_the_old_folder_or_the_new(
         assert contents(found.dest) in outcome, f"call {failing}"
         if len(calls) < failing:
             return
+
+
+# --- The conversion record is part of a placement --------------------------------------------------------------------
+
+
+def _read_only_records(parent: Path) -> Path:
+    records = parent / ".salmon-conversions"
+    records.mkdir(parents=True, exist_ok=True)
+    records.chmod(0o555)  # As a container's other user leaves it
+    return records
+
+
+@pytest.mark.parametrize("replaces", [True, False], ids=["replacing", "new"])
+def test_a_record_that_cannot_be_written_undoes_the_placement(monkeypatch, dirs, replaces) -> None:
+    source = album(dirs.downloads / "Album [V0]")
+    dest = dirs.red / source.name
+    record_conversion(str(source), source="/the/album", kind="transcode", bitrate="V0")
+    before = None
+    if replaces:
+        album(dest, tags={"album": "the old one"})
+        record_conversion(str(dest), source="/the/old", kind="transcode", bitrate="320")
+        before = contents(dest), conversion_of(str(dest))
+        answer(monkeypatch, True)
+        # An existing record is replaced by a file beside it, which a read-only folder refuses.
+    records = _read_only_records(dirs.red)
+    try:
+        with pytest.raises(PlacementError, match="Could not make") as failed:
+            _place(dirs, src=source)
+    finally:
+        records.chmod(0o755)
+
+    assert not isinstance(failed.value, PlacementDeclined)
+    if before is None:
+        assert not dest.exists()  # So a retry doesn't find it
+        assert _place(dirs, src=source) == str(dest)
+    else:
+        assert (contents(dest), conversion_of(str(dest))) == before
+    assert building_left(dirs.root) == []
+    assert _replaced_left(dirs.root) == []
+
+
+def test_a_record_that_cannot_be_read_undoes_the_placement(dirs) -> None:
+    source = album(dirs.downloads / "Album [V0]")
+    record_conversion(str(source), source="/the/album", kind="transcode", bitrate="V0")
+    sidecar = dirs.downloads / ".salmon-conversions" / "Album [V0].json"
+    sidecar.chmod(0o000)
+    try:
+        with pytest.raises(PlacementError):
+            _place(dirs, src=source)
+    finally:
+        sidecar.chmod(0o644)
+
+    assert not (dirs.red / source.name).exists()
+
+
+def test_a_stale_record_at_the_name_is_cleared(dirs) -> None:
+    dirs.red.mkdir(parents=True)
+    # Of a folder deleted by hand since
+    record_conversion(str(dirs.dest), source="/gone", kind="transcode", bitrate="V0")
+
+    _place(dirs)
+
+    assert conversion_of(str(dirs.dest)) is None  # A FLAC, never described as a transcode
+
+
+def test_a_stale_record_that_cannot_be_cleared_undoes_the_placement(dirs) -> None:
+    dirs.red.mkdir(parents=True)
+    record_conversion(str(dirs.dest), source="/gone", kind="transcode", bitrate="V0")
+    records = _read_only_records(dirs.red)
+    try:
+        with pytest.raises(PlacementError):
+            _place(dirs)
+    finally:
+        records.chmod(0o755)
+
+    assert not dirs.dest.exists()
+
+
+def test_an_album_without_a_record_needs_no_writable_record_folder(dirs) -> None:
+    records = _read_only_records(dirs.red)
+    try:
+        assert _place(dirs) == str(dirs.dest)
+    finally:
+        records.chmod(0o755)

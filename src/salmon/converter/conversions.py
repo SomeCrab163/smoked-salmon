@@ -249,18 +249,34 @@ def carry_conversion(old: str, new: str) -> None:
         forget_conversion(old)
 
 
+def copy_record(old: str, new: str) -> None:
+    """Make the record of new, a folder just copied from old, old's: none if old has none, whatever was left there.
+
+    Raises:
+        OSError: old's record could not be read, or new's could not be written or removed. new's is then as it was.
+    """
+    facts = conversion_of(old)
+    if facts is None:
+        _remove_record(new)
+    else:
+        record_conversion(new, **_without_output(facts))
+
+
 def forget_conversion(folder: str) -> None:
     """Remove the record of a folder that is gone. Nothing is removed where record_conversion writes nothing."""
+    try:
+        _remove_record(folder)
+    except OSError as e:
+        click.secho(f"Could not remove the conversion record {_sidecar(folder)}: {e}", fg="yellow")
+
+
+def _remove_record(folder: str) -> None:
     sidecar = _sidecar(folder)
     record_dir = os.path.dirname(sidecar)
     if cfg.directory.protects(record_dir) or cfg.directory.protects(os.path.dirname(record_dir)):
         return
-    try:
+    with contextlib.suppress(FileNotFoundError):
         os.remove(sidecar)
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        click.secho(f"Could not remove the conversion record {sidecar}: {e}", fg="yellow")
 
 
 def _usable(data: Any, folder: str) -> bool:

@@ -104,10 +104,12 @@ async def rename_folder(path, metadata, auto_rename, check=True, parent=None, or
         # folder: a case-only rename still renames salmon's folder outside it.
         _move_specs_folder(specs_path, get_spectrals_path(new_path))
 
-    # Local: the converter package imports this module.
-    from salmon.converter.conversions import carry_conversion
+    # A placement has given the new folder its record already, or been undone.
+    if same_folder or not placing:
+        # Local: the converter package imports this module.
+        from salmon.converter.conversions import carry_conversion
 
-    carry_conversion(path, new_path)
+        carry_conversion(path, new_path)
     return new_path
 
 
@@ -193,11 +195,6 @@ async def _place_renamed(
         await placement.place_folder(path, new_path, ignore=ignore, replacing=replacing)
     except PlacementDeclined as declined:
         _abort(str(declined))
-    if replacing is not None:
-        # Local: the converter package imports this module. A replaced conversion's record isn't the new folder's.
-        from salmon.converter.conversions import forget_conversion
-
-        forget_conversion(new_path)
 
 
 def _copy_folder(path: str, new_path: str, ignore: placement.Ignore | None) -> None:

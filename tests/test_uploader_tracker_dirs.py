@@ -788,3 +788,29 @@ def test_with_no_key_both_deletes_are_as_before(monkeypatch, dirs) -> None:
     anyio.run(partial(salmon.uploader._delete_after_abort, str(deleted), str(deleted), None, None))
 
     assert not source.exists() and not deleted.exists()
+
+
+def test_a_rename_clears_a_stale_record_at_its_name(monkeypatch, dirs) -> None:
+    dirs.red.mkdir(parents=True)
+    record_conversion(str(dirs.red / "New"), source="/gone", kind="transcode", bitrate="V0")
+
+    _rename(monkeypatch, album(dirs.root / "in" / "New"), "New", dirs.red)
+
+    assert conversion_of(str(dirs.red / "New")) is None
+
+
+def test_a_rename_whose_record_cannot_be_written_is_undone(monkeypatch, dirs) -> None:
+    source = album(dirs.root / "in" / "New")
+    record_conversion(str(source), source="/the/album", kind="transcode", bitrate="V0")
+    before = contents(_earlier(dirs.red / "New"))
+    records = dirs.red / ".salmon-conversions"
+    records.mkdir()
+    records.chmod(0o555)
+    answer(monkeypatch, True)
+    try:
+        with pytest.raises(UploadError, match="Could not make"):
+            _rename(monkeypatch, source, "New", dirs.red)
+    finally:
+        records.chmod(0o755)
+
+    assert contents(dirs.red / "New") == before

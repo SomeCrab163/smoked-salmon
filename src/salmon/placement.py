@@ -144,7 +144,8 @@ def _same_folder(first: str, second: str) -> bool:
 async def place_folder(
     src: str, dest: str, *, ignore: Ignore | None = None, replacing: Replacing | None = None
 ) -> None:
-    """Make dest from src whole or not at all. `replacing` is the folder the user agreed to replace.
+    """Make dest from src whole or not at all, its conversion record included: src's, or none. `replacing` is the
+    folder the user agreed to replace.
 
     Raises:
         PlacementDeclined: dest must not be made or replaced, it is not as it was, or a copy was declined.
@@ -287,7 +288,8 @@ async def _agree_to_copy(src: str, dest: str, why: str) -> None:
 
 
 def _move_into_place(src: str, built: str, dest: str, replacing: Replacing | None) -> None:
-    """Rename the finished folder to dest, all or nothing: whatever stops it, the folder to replace is put back.
+    """Rename the finished folder to dest and give it src's conversion record, all or nothing: whatever stops either,
+    the folder to replace is put back.
 
     Nothing is awaited from the checks to the rename. Another job or program may have changed dest while a question
     waited or the copy was made, so all of them are made again here.
@@ -295,6 +297,9 @@ def _move_into_place(src: str, built: str, dest: str, replacing: Replacing | Non
     _refuse(src, dest)
     if replacing is not None and (change := replacing.changed(dest)) is not None:
         raise PlacementDeclined(f"Not replacing {dest}: {change} while salmon was working.")
+    # Imported here: the converter package imports the tagger, which imports this module.
+    from salmon.converter.conversions import copy_record
+
     new = os.lstat(built)
     # A sibling: moving a folder within its parent takes no write permission on the folder itself.
     aside = os.path.join(os.path.dirname(dest), f"{REPLACED_PREFIX}{uuid.uuid4().hex[:12]}")
@@ -305,6 +310,8 @@ def _move_into_place(src: str, built: str, dest: str, replacing: Replacing | Non
         if os.path.lexists(dest):
             raise PlacementDeclined(f"Not replacing {dest}: it appeared while salmon was working.")
         _move(built, dest)
+        # Last, as it changes nothing when it fails: a record left at the name would describe another folder.
+        copy_record(src, dest)
     except BaseException:
         # A Ctrl-C too, which can come as a rename returns: what is undone is read from the disk.
         _undo(built, dest, aside, new)
@@ -416,13 +423,6 @@ class PlacedFolders:
         replacing = await _agree_to_replace(dest) if os.path.lexists(dest) else None
         await place_folder(src, dest, replacing=replacing)
         self._made[dest] = src
-
-        # Imported here: the converter package imports the tagger, which imports this module.
-        from salmon.converter.conversions import carry_conversion, forget_conversion
-
-        if replacing is not None:
-            forget_conversion(dest)
-        carry_conversion(src, dest)
 
     def conversion_dir(self, album: str, kind: str, code: str) -> str:
         """Where tracker `code`'s conversion of album is made: where this run made that kind, else its directory."""
