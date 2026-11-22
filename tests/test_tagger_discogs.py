@@ -4,6 +4,7 @@ import random
 
 import pytest
 
+from salmon.errors import ScrapeError
 from salmon.tagger.sources.base import append_remixers_to_track_titles, generate_artists
 from salmon.tagger.sources.discogs import (
     Scraper,
@@ -50,6 +51,40 @@ def test_discogs_artist_who_arranged_their_own_track_stays_its_main_artist() -> 
     }
 
     assert parse_artists([], track) == [("Main Artist", "main"), ("Main Artist", "arranger")]
+
+
+@pytest.mark.parametrize(
+    ("mains", "extras", "expected"),
+    [
+        (["Queen"], [("Queen", "Producer")], [("Queen", "main"), ("Queen", "producer")]),
+        (["Ava"], [("Ava", "Remix")], [("Ava", "main"), ("Ava", "remixer")]),
+        (["Ava"], [("Ava", "Vocals")], [("Ava", "main"), ("Ava", "guest")]),
+        (["Ava"], [("Ava", "Composed By")], [("Ava", "main"), ("Ava", "composer")]),
+        (
+            ["Ava", "Max"],
+            [("Ava", "Producer"), ("Max", "Producer")],
+            [("Ava", "main"), ("Max", "main"), ("Ava", "producer"), ("Max", "producer")],
+        ),
+        (["Ava", "Max"], [("Max", "Producer")], [("Ava", "main"), ("Max", "main"), ("Max", "producer")]),
+    ],
+    ids=["produced it", "remixed it", "sang on it", "wrote it", "both produced it", "one of two produced it"],
+)
+def test_discogs_main_artist_credited_in_another_role_stays_main(
+    mains: list[str], extras: list[tuple[str, str]], expected: list[tuple[str, str]]
+) -> None:
+    track = {
+        "artists": [artist(name, "&") for name in mains],
+        "extraartists": [{"name": name, "role": role} for name, role in extras],
+    }
+
+    assert parse_artists([], track) == expected
+
+
+def test_discogs_release_artist_credited_in_another_role_stays_main() -> None:
+    # A track with no artists of its own takes the release's.
+    track = {"extraartists": [{"name": "Queen", "role": "Producer"}]}
+
+    assert parse_artists([{"name": "Queen"}], track) == [("Queen", "main"), ("Queen", "producer")]
 
 
 def test_discogs_multi_disc_positions_without_headings_split_by_disc() -> None:
@@ -484,22 +519,20 @@ def test_as_before_a_track_moved_to_the_disc_its_heading_starts_names_that_disc(
 
 
 def test_unnumbered_entries_under_one_heading_start_no_disc() -> None:
-    # The repeats write over the entry before them, as on master; #968 (held) refuses them.
+    # They are not a disc, and two of them at one place are refused (#968).
     tracklist = [track("1", "One"), track("2", "Two"), track("3", "Three"), heading("Bonus")]
     tracklist += [track("", "Four"), track("", "Five"), track("", "Six")]
 
-    parsed = discs(tracklist)
-
-    assert parsed == {"1": ["1", "2", "3", ""]}
+    with pytest.raises(ScrapeError, match="Disc 1 has two tracks with no number."):
+        discs(tracklist)
 
 
 def test_an_unnumbered_entry_repeated_later_under_a_heading_starts_no_disc() -> None:
     tracklist = [track("1", "One"), track("2", "Two"), track("-", "Intro"), heading("Live"), track("3", "Three")]
     tracklist += [track("-", "Interlude"), track("4", "Four")]
 
-    parsed = discs(tracklist)
-
-    assert parsed == {"1": ["1", "2", "-", "3", "4"]}
+    with pytest.raises(ScrapeError, match="Disc 1 has two tracks with no number."):
+        discs(tracklist)
 
 
 @pytest.mark.parametrize(
@@ -576,13 +609,12 @@ def test_as_before_a_dvd_numbered_from_1_after_a_heading_takes_no_cd_track() -> 
     assert parsed == {"1": ["1A", "2"], "2": ["1", "2"]}
 
 
-def test_as_before_a_repeated_position_after_the_first_does_not_start_a_disc() -> None:
-    # #968: repeated under the same heading, a position is a tracklist error, not a new disc.
+def test_a_repeated_position_after_the_first_starts_no_disc_and_is_refused() -> None:
+    # Repeated under the same heading, a position is a tracklist error, not a new disc (#968).
     tracklist = [heading("Live"), track("1", "One"), track("2", "Two"), track("2", "Again")]
 
-    parsed = discs(tracklist)
-
-    assert list(parsed) == ["1"]
+    with pytest.raises(ScrapeError, match="Disc 1 has two tracks numbered 2."):
+        discs(tracklist)
 
 
 def test_a_second_record_from_a1_again_starts_a_disc_without_a_heading() -> None:
@@ -836,9 +868,12 @@ def _named(entry: dict) -> tuple[int | None, str]:
 
 
 def test_a_track_whose_position_names_its_disc_is_never_on_another() -> None:
-    # It may be written over by its own number again on that disc, which #968 refuses.
+    # A tracklist repeating a place on a disc is refused (#968), so it places nothing.
     for tracklist in _generated(2000):
-        tracks = asyncio.run(Scraper().parse_tracks(make_soup(tracklist)))
+        try:
+            tracks = asyncio.run(Scraper().parse_tracks(make_soup(tracklist)))
+        except ScrapeError:
+            continue
         disc_of = {track["title"]: disc for disc, numbers in tracks.items() for track in numbers.values()}
 
         for entry in tracklist:
