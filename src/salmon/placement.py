@@ -259,16 +259,23 @@ def _building_in(parent: str) -> Iterator[str]:
     try:
         yield temp
     finally:
+        removed, reason = False, "salmon was stopped"
         try:
             _remove_folder(temp)
+            removed = True
         except OSError as error:
-            click.secho(f"Could not remove {temp}: {error}", fg="yellow")
+            reason = str(error)
+        finally:  # An interrupt too: the name is hidden
+            if not removed:
+                click.secho(f"Could not remove {temp}: {reason}", fg="yellow")
 
 
 def _remove_folder(path: str) -> None:
     """Remove a folder salmon was building, or one it moved aside to replace. An album's read-only folders are copied
     read-only, so they are made writable first."""
-    if not os.path.isdir(path):
+    try:
+        os.lstat(path)  # Not isdir, which takes one it can't look at for none
+    except FileNotFoundError:
         return
     _make_writable(path)
     shutil.rmtree(path)
@@ -395,9 +402,10 @@ def _move_into_place(src: str, built: str, dest: str, replacing: Replacing | Non
         # A Ctrl-C too, which can come as a rename returns: what is undone is read from the disk.
         _undo(built, dest, aside, new, record, replacing)
         raise
-    record.discard()
-    if replacing is not None:
-        _remove_replaced(dest, aside, replacing)
+    if replacing is None:
+        record.discard()
+    else:
+        _remove_replaced(dest, aside, replacing, record)
 
 
 def _refuse_appeared(dest: str) -> None:
@@ -440,28 +448,35 @@ def _undo(
             record.put_back()
     except OSError as error:
         click.secho(f"Could not undo the placement at {dest}: {error}", fg="red")
-    if os.path.lexists(aside):
-        click.secho(f"The folder that was at {dest} is kept, whole, at {aside}: move it back.", fg="red", bold=True)
+    finally:  # An interrupt too: the name is hidden
+        if os.path.lexists(aside):
+            click.secho(f"The folder that was at {dest} is kept, whole, at {aside}: move it back.", fg="red", bold=True)
 
 
-def _remove_replaced(dest: str, aside: str, replacing: Replacing) -> None:
-    # Nothing finds it by dest's path any more, so what differs now was written before or as it was moved.
-    if why := _not_to_remove(aside, replacing):
-        click.secho(
-            f"Replaced {dest}, but the folder that was there {why}, so it is kept, whole, at {aside}: "
-            "take what you need from it, then remove it.",
-            fg="yellow",
-            bold=True,
-        )
-        return
+def _remove_replaced(dest: str, aside: str, replacing: Replacing, record: "RecordSwap") -> None:
+    done, reason = False, "salmon was stopped"
     try:
-        _remove_folder(aside)
+        record.discard()
+        # Nothing finds it by dest's path any more, so what differs now was written before or as it was moved.
+        if why := _not_to_remove(aside, replacing):
+            click.secho(
+                f"Replaced {dest}, but the folder that was there {why}, so it is kept, whole, at {aside}: "
+                "take what you need from it, then remove it.",
+                fg="yellow",
+                bold=True,
+            )
+        else:
+            _remove_folder(aside)
+        done = True
     except OSError as error:
-        click.secho(
-            f"Replaced {dest}, but could not remove all of the folder that was there. What is left is at {aside}: "
-            f"remove it yourself ({_reason(error)}).",
-            fg="yellow",
-        )
+        reason = _reason(error)
+    finally:  # An interrupt too: the name is hidden
+        if not done:
+            click.secho(
+                f"Replaced {dest}, but could not remove all of the folder that was there. What is left is at {aside}: "
+                f"remove it yourself ({reason}).",
+                fg="yellow",
+            )
 
 
 def _not_to_remove(aside: str, replacing: Replacing) -> str | None:
