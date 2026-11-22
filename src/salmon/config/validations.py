@@ -271,6 +271,7 @@ class GazelleTrackerSettings(BaseStruct):
     download_directory: str | None = None
 
     def __post_init__(self):
+        self.download_directory = _expand_folder(self.download_directory) if self.download_directory else None
         if self.dottorrents_dir:
             self.dottorrents_dir = _expand_folder(self.dottorrents_dir)
         if self.cross_upload_dottorrents_dir:
@@ -640,6 +641,50 @@ class Cfg(BaseStruct):
                     raise ValueError(f"tracker.{code}.{key} is not a valid directory")
                 if folder and (library := self.directory.library_of(folder)) is not None:
                     raise ValueError(f"library_dirs entry {library} must not contain tracker.{code}.{key} ({folder})")
+        self._check_tracker_directories()
+        self._check_local_seedboxes()
+
+    def _check_tracker_directories(self) -> None:
+        # salmon makes, replaces and deletes album folders in these. Never compared with the global one or with
+        # another tracker's: /downloads holding /downloads/red is valid.
+        for code in _TRACKER_CODES:
+            settings: GazelleTrackerSettings | None = getattr(self.tracker, code)
+            if settings is None or not (folder := settings.download_directory):
+                continue
+            name = f"tracker.{code}.download_directory"
+            # It need not exist: it is created on first write.
+            if os.path.exists(folder) and not os.path.isdir(folder):
+                raise ValueError(f"{name} is not a valid directory")
+            if (library := self.directory.library_of(folder)) is not None:
+                raise ValueError(f"library_dirs entry {library} must not contain {name} ({folder})")
+            if (library := self.directory.library_inside(folder)) is not None:
+                raise ValueError(f"library_dirs entry {library} must not be inside {name} ({folder})")
+            tmp_dir = self.directory.tmp_dir
+            if tmp_dir and self.directory.clean_tmp_dir and holds(tmp_dir, folder):
+                raise ValueError(
+                    f"{name} ({folder}) must not be inside tmp_dir ({tmp_dir}) with clean_tmp_dir on: salmon would "
+                    "delete its music when it starts"
+                )
+
+    def _check_local_seedboxes(self) -> None:
+        """Refuse a local seedbox whose one directory would be the save path of trackers with different folders."""
+        configured = [code.upper() for code in _TRACKER_CODES if getattr(self.tracker, code) is not None]
+        for position, seedbox in enumerate(self.seedbox, 1):
+            if not (seedbox.enabled and seedbox.type == "local" and seedbox.directory):
+                continue
+            served = [code for code in configured if not seedbox.trackers or code in seedbox.trackers]
+            folders = [self.download_directory_for(code) for code in served]
+            # seedbox.directory itself is not compared: in Docker it is the client's view of the path.
+            if all(holds(folders[0], folder) and holds(folder, folders[0]) for folder in folders):
+                continue
+            # By name or position: never by its URLs, which hold passwords.
+            box = f"seedbox '{seedbox.name}'" if seedbox.name else f"seedbox number {position}"
+            raise ValueError(
+                f"{box} has one directory for trackers whose download_directory differs: "
+                f"{', '.join(f'{code} ({folder})' for code, folder in zip(served, folders, strict=True))}. "
+                "Remove its directory, so that each torrent is saved in its tracker's folder, or use one seedbox per "
+                "tracker, with trackers set."
+            )
 
     def cross_upload_dottorrents_dir(self, code: str) -> str | None:
         """The folder salmon cross-upload writes tracker `code`'s .torrent files to, or None when none is set for it.
