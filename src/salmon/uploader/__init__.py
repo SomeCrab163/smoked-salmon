@@ -27,6 +27,7 @@ from salmon.errors import (
     RequestError,
     SkipTracker,
 )
+from salmon.placement import PlacedFolders
 from salmon.tagger import (
     validate_encoding,
     validate_source,
@@ -957,6 +958,7 @@ async def _upload_staged(  # noqa: C901
             spectral_urls=spectral_urls,
             spectral_ids=spectral_ids,
             failed_trackers=[gazelle_site.site_string] if first_listed else [],
+            placed=PlacedFolders(*filter(None, (source_folder, original, path))),
         )
         finished = False  # The loop ended by itself: no abort, no exception
         aborted = False

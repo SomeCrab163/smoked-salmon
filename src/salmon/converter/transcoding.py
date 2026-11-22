@@ -29,6 +29,7 @@ from salmon.converter.conversions import (
     source_of,
 )
 from salmon.errors import UploadError
+from salmon.placement import data_directory_refusal
 from salmon.release_notification import get_version
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.tagger.cover import MAX_PICTURES_AND_PADDING
@@ -552,6 +553,8 @@ async def transcode_folder(
     # Resolved, so a symlink on the way cannot carry the output, or the removal of an incomplete one, into a library.
     if cfg.directory.protects(new_path):
         raise UploadError(f"Not transcoding into {new_path}: it is in library_dirs, or holds one.")
+    if (reason := data_directory_refusal(new_path)) is not None:
+        raise UploadError(f"Not transcoding into {new_path}: {reason}.")
 
     # Before the tags are read: a track retagged while the transcode runs then differs from its record.
     fingerprints = source_fingerprints(path, get_audio_files(path))

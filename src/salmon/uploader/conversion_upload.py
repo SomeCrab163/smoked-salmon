@@ -11,10 +11,11 @@ from salmon.converter.conversions import conversion_of, recorded_files
 from salmon.converter.downconverting import convert_folder, generate_conversion_description
 from salmon.converter.transcoding import generate_transcode_description, transcode_folder
 from salmon.errors import UploadError
+from salmon.placement import PlacedFolders, PlacementError, ensure_directory
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.tagger.folderstructure import check_folder_structure
 from salmon.trackers.base import TagRules
-from salmon.uploader.conversion_choice import downconversion_format
+from salmon.uploader.conversion_choice import conversion_kind, downconversion_format
 from salmon.uploader.seedbox import UploadManager
 from salmon.uploader.upload import upload_and_report
 
@@ -55,6 +56,35 @@ def _by_source_name(folder: str, audio_info: dict[str, Any]) -> dict[str, Any]:
     return {source: audio_info[path] for source, path in files.items()}
 
 
+def _output_dir(placed: PlacedFolders, album: str, task: dict[str, Any], site_code: str) -> str:
+    """Where this conversion of album is made for this tracker, created if it is not there.
+
+    Raises:
+        PlacementError: It could not be created.
+    """
+    if dryrun.active():
+        return dryrun.scratch_dir()  # A dry run's go into its scratch directory, removed with it.
+    folder = placed.conversion_dir(album, conversion_kind(task), site_code)
+    if cfg.per_tracker_directories():
+        ensure_directory(folder)
+    return folder
+
+
+async def _placed_conversion(
+    placed: PlacedFolders, album: str, task: dict[str, Any], made: str, gazelle_site: "BaseGazelleApi"
+) -> str | None:
+    """The folder this tracker uploads the conversion at made from; None when it can't have one."""
+    if dryrun.active():
+        return made
+    placed.made_conversion(album, conversion_kind(task), made)
+    try:
+        return await placed.place(made, gazelle_site.site_code)
+    except PlacementError as error:
+        click.secho(f"  {error}", fg="red", bold=True)
+        click.secho(f"  Not uploading {task['name']} to {gazelle_site.site_string}.", fg="red", bold=True)
+        return None
+
+
 async def execute_downconversion_tasks(
     selected_tasks: list[dict[str, Any]],
     path: str,
@@ -76,8 +106,12 @@ async def execute_downconversion_tasks(
     *,
     uploaded: list[str] | None = None,
     max_path_length: int | None = None,
+    placed: PlacedFolders | None = None,
 ) -> None:
     """Execute the selected downconversion tasks.
+
+    Each is made from path, never from a placed copy of it: a conversion's record knows it by its source. It is made
+    once a run, in the directory of the first tracker that uploads it, and placed from there for the later ones.
 
     Args:
         selected_tasks: List of downconversion task dicts.
@@ -100,15 +134,16 @@ async def execute_downconversion_tasks(
         uploaded: Where to add the URL of each torrent uploaded.
         max_path_length: The longest in-torrent path each conversion may have: the run's limit, the one its album
             folder was checked against. None: gazelle_site's run limit, without the trackers named with -t.
+        placed: What the run placed in the trackers' directories. None: nothing yet.
     """
     if uploaded is None:
         uploaded = []
     if max_path_length is None:
         max_path_length = _max_path_length_for_run(gazelle_site)
 
+    if placed is None:
+        placed = PlacedFolders()
     base_path = path
-    # A dry run's go into its scratch directory, removed with it.
-    output_dir = dryrun.scratch_dir() if dryrun.active() else cfg.directory.download_directory
 
     override_lossy_comment = (
         f"Transcode of {base_url}\n[hide=Lossy comment of original torrent]{lossy_comment}[/hide]\n"
@@ -126,7 +161,7 @@ async def execute_downconversion_tasks(
                     base_path,
                     bit_depth=task["target_bitdepth"],
                     sample_rate=task["target_sample_rate"],
-                    output_dir=output_dir,
+                    output_dir=_output_dir(placed, base_path, task, gazelle_site.site_code),
                 )
             except (UploadError, OSError) as e:
                 click.secho(f"  {e}", fg="red", bold=True)
@@ -169,11 +204,13 @@ async def execute_downconversion_tasks(
             description = generate_conversion_description(base_url, sample_rate, task["target_bitdepth"])
             click.secho(f"  Generated description: {description[:100]}...", fg="blue")
             await check_folder_structure(new_path, conversion_metadata["scene"], max_path_length=max_path_length)
+            if (folder := await _placed_conversion(placed, base_path, task, new_path, gazelle_site)) is None:
+                continue
 
             # Upload the converted version
             torrent_id, group_id, torrent_path, torrent_content, new_url = await upload_and_report(
                 gazelle_site,
-                new_path,
+                folder,
                 group_id,
                 conversion_metadata,
                 cover_url,
@@ -200,6 +237,7 @@ async def execute_downconversion_tasks(
 
             # Execute transcoding
             try:
+                output_dir = _output_dir(placed, base_path, task, gazelle_site.site_code)
                 transcoded_path = await transcode_folder(base_path, task["encoding"], output_dir=output_dir)
             except (UploadError, OSError) as e:
                 click.secho(f"  {e}", fg="red", bold=True)
@@ -215,11 +253,13 @@ async def execute_downconversion_tasks(
             description = generate_transcode_description(base_url, task["encoding"])
             click.secho(f"  Generated description: {description[:100]}...", fg="blue")
             await check_folder_structure(transcoded_path, transcode_metadata["scene"], max_path_length=max_path_length)
+            if (folder := await _placed_conversion(placed, base_path, task, transcoded_path, gazelle_site)) is None:
+                continue
 
             # Upload the transcoded version
             torrent_id, group_id, torrent_path, torrent_content, new_url = await upload_and_report(
                 gazelle_site,
-                transcoded_path,
+                folder,
                 group_id,
                 transcode_metadata,
                 cover_url,

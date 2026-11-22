@@ -10,6 +10,7 @@ from salmon import cfg, dryrun
 from salmon.converter.downconverting import BitDepth, conversion_note
 from salmon.converter.transcoding import Bitrate, transcode_note
 from salmon.errors import RequestError, UnknownOutcomeError
+from salmon.placement import PlacedFolders, PlacementDeclined, PlacementError
 from salmon.trackers.connection import print_certificate_hint
 from salmon.uploader import record
 from salmon.uploader.conversion_choice import (
@@ -71,13 +72,14 @@ class TrackerRun:
     # needed to retry them. A first tracker refused before the loop is one of them.
     failed_trackers: list[str] = field(default_factory=list)
     cover_urls: dict[str, str | None] = field(default_factory=dict)  # Uploaded cover URL per image host
+    placed: PlacedFolders = field(default_factory=PlacedFolders)  # What the run placed in the trackers' folders
 
 
 class Turn(enum.Enum):
     """How a tracker's turn ended, for the loop to choose what comes next."""
 
     ENDED = enum.auto()  # Ran to its end, whether or not anything went up: the loop may say it is done
-    # Refused at the cover, or without the spectrals that failed: skipped, and nothing was sent
+    # Refused at the cover, without the spectrals that failed or without its folder: skipped, and nothing was sent
     SKIPPED = enum.auto()
 
 
@@ -112,6 +114,27 @@ async def _upload_edition(
     if metadata is not release.metadata and _do_not_upload_refusal(gazelle_site.site_code, metadata) is not None:
         return None
     return metadata
+
+
+async def _placed_album(gazelle_site: "BaseGazelleApi", release: ReleaseToUpload, run: TrackerRun) -> str | None:
+    """The folder this tracker's torrent is made and seeded from; None when it can't have one, which skips it.
+
+    Made here, after the cover and spectrals steps, which write into the first folder: nothing is written into a
+    placed one.
+    """
+    try:
+        return await run.placed.place(release.path, gazelle_site.site_code)
+    except PlacementError as error:
+        click.secho(f"\n{error}", fg="red", bold=True)
+        if isinstance(error, PlacementDeclined) and error.kept:
+            click.secho(
+                f"To upload there, put {gazelle_site.site_code} first with -t, or use salmon cross-upload.",
+                fg="yellow",
+            )
+        click.secho(f"Skipping upload to {gazelle_site.site_string}.", fg="red", bold=True)
+        # Not a skip the user chose, even when it was declined: the run is not complete.
+        run.failed_trackers.append(gazelle_site.site_string)
+        return None
 
 
 async def upload_to_tracker(
@@ -176,9 +199,11 @@ async def upload_to_tracker(
             )
         else:
             group_link = f"{gazelle_site.base_url}/torrents.php?id={group_id}" if group_id else release.source_url
+            if (folder := await _placed_album(gazelle_site, release, run)) is None:
+                return Turn.SKIPPED
             torrent_id, group_id, torrent_path, torrent_content, url = await upload_and_report(
                 gazelle_site,
-                release.path,
+                folder,
                 group_id,
                 metadata,
                 cover_url,
@@ -283,6 +308,7 @@ async def upload_to_tracker(
                     url,
                     uploaded=run.uploaded,
                     max_path_length=release.max_path_length,
+                    placed=run.placed,
                 )
                 if len(run.uploaded) - before < len(selected_tasks):
                     run.failed_trackers.append(gazelle_site.site_string)

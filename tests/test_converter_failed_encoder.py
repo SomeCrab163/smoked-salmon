@@ -7,6 +7,7 @@ import shutil
 import stat
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import anyio
@@ -352,12 +353,13 @@ def test_up_ends_only_that_conversion_when_a_copy_fails(monkeypatch, capsys, tmp
 
     monkeypatch.setattr(shutil, "copy", full)
     nothing: Any = None
+    site: Any = SimpleNamespace(site_code="RED")
 
     async def run() -> None:
         await conversion_upload.execute_downconversion_tasks(
             [task],
             str(album),
-            nothing,
+            site,
             nothing,
             nothing,
             nothing,
