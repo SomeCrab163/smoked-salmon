@@ -237,7 +237,7 @@ salmon up "/app/.music/path/to/album" -s WEB
      ```
 
 - **Hardlinks**  
-  With `hardlinks = true` (the default), salmon hardlinks the release into `download_directory` instead of copying it. A hardlink cannot cross mounts, even two bind mounts of the same disk, so point `download_directory` at a folder inside the music mount (e.g. `/app/.music/seeding`). Otherwise salmon falls back to a full copy, or, when any tracker has a `download_directory` of its own, asks whether to copy (with `-yyy` it copies and says so).
+  With `hardlinks = true` (the default), salmon hardlinks the release into `download_directory` instead of copying it. A hardlink cannot cross mounts, even two bind mounts of the same disk, so point `download_directory` at a folder inside the music mount (e.g. `/app/.music/seeding`). Otherwise salmon falls back to a full copy. When any tracker has a `download_directory` of its own, `salmon up` and `salmon cross-upload` ask whether to copy instead (with `-yyy` they copy and say so); `salmon tag` still copies without asking.
   An album whose files already have another hardlink, or that is or holds a symlink (for example a folder your torrent client seeds, hardlinked into your music folder), is never retagged in place: `salmon up` and `salmon tag` work on a real copy, which takes the album's size in disk space, and `salmon compress` and the integrity check's sanitize refuse it.
 
 - **A folder per tracker**  
@@ -401,7 +401,9 @@ the tracker's API with its API key, otherwise with its session cookie; never wit
 by size only, and the plan says so. Then, for each release, it checks the target for duplicates as `up` does and uploads it with the
 source's group and torrent data. The album folder is never changed. The new torrent seeds from the same files, or,
 when any tracker has a `download_directory` of its own, from the album hardlinked or copied into the target's folder
-(the plan shows where). A release whose folder there is declined is skipped, and the command then exits with 1.
+(the plan shows where). A release whose folder there is declined is skipped, and the command then exits with 1. A
+conversion that you keep from being overwritten at "Delete it and re-transcode?" (or that `-yyy` keeps) is left out
+without changing the exit status, as is one that fails for another reason.
 An rclone seedbox only gets the new torrent, not another copy. `--dry-run` reads from both trackers and sends
 nothing. A cross-upload to DIC is never marked Self-purchased, Self-rip or Exclusive (it is a re-post, so it is
 not asked), and a 24-bit one gets its sample rate as `up` sends it. DIC's support follows chodeus's fork: its
@@ -453,20 +455,32 @@ A tracker without the key uses the global folder, and with no key set nothing ch
   folder in `/data/ops` just before the OPS upload. `salmon cross-upload` makes it in the target's folder.
 * Those folders are hardlinks, or copies with `hardlinks = false`. An album in `library_dirs` is always copied. Where
   a link can't be made, salmon asks whether to copy, once for each folder it makes (default yes).
-* A folder already there is never merged. salmon asks to replace it (default no). It then moves that folder to a
-  hidden `.salmon-replaced-*` name beside it, puts it back if the new one can't be put in place, and deletes it once
-  the new one is. If salmon is killed in between, or can't delete all of it, the old folder is under that name.
+* Where `salmon up` or `salmon cross-upload` puts an album or a finished conversion, a folder already there is never
+  merged. salmon asks to replace it (default no). It then moves that folder to a hidden `.salmon-replaced-*` name
+  beside it, puts it back if the new one can't be put in place, and deletes it once the new one is.
   If you keep it, that tracker is skipped; for the first tracker, the run stops. `-yyy` never replaces. So a retry
   after a failed upload finds the folder the last run made, and asks.
+* That replace is refused when the folder is or holds a mount point, or when anything in it changed while salmon
+  asked or copied (a media server writing into it counts). One that changes as it is moved is kept under the hidden
+  name, and salmon says so. The old folder is also under that name if salmon is killed in between or can't delete all
+  of it. A kill, or a disk that stops taking writes, can lose the note of how a converted folder was made.
+* Ctrl-C (Cancel in salmon web) before the new folder is moved in replaces nothing. During a copy it takes effect
+  when the copy ends: press Ctrl-C again to stop at once.
 * The album is renamed into the first tracker's folder even when that tracker then refuses it (its files, its
   Do-Not-Upload list, or a failed dupe search), and the later trackers' folders are made from it. That folder then
   has no torrent seeding it: to avoid that, put a tracker that takes the release first with `-t`.
-* salmon never replaces the album a run started from, or a folder that is or holds one of these directories. To
+* That replace never takes the album a run started from, or a folder that is or holds one of these directories. To
   upload to the tracker whose folder the album is already in, put it first with `-t`, or use `salmon cross-upload`.
-* Conversions are made once, in the folder of the first tracker that uploads them.
+* Two other questions delete as soon as you say yes, with nothing moved aside: `salmon tag`'s "replace it?" and a
+  conversion's "Delete it and re-transcode?". The second can name the album the run started from, or another release
+  of the same cross-upload, when that album has the conversion's name: read the path before you say yes.
+* Conversions are made once, in the folder of the first tracker that uploads them, and are known by the album they
+  were made from. Started on another tracker's copy of that album, salmon calls them another album's and says to
+  remove them: don't, if they seed. Start from the first tracker's folder.
 * A local seedbox without a `directory` gets the tracker's folder as save path. One with a `directory` can't serve
   trackers with different folders: salmon refuses that config at start.
-* `remove_source_dir` keeps the album when a tracker was skipped rather than replace it. Neither it nor
+* `remove_source_dir` keeps the album when a tracker was skipped rather than replace it, but not when that tracker's
+  folder is a symlink to the album, which then leads nowhere. Neither it nor
   `[d]elete music folder` ever deletes one of these directories or a folder that holds one.
 * `salmon tag`, and `salmon transcode` and `salmon downconv` run on their own, still use the global folder where
   they used it before.
@@ -570,9 +584,14 @@ Also under `[web]`:
   address. A request with any other `Host` is refused. Example: `allowed_hosts = ["seedbox.lan", "192.168.1.20"]`.
 * `max_jobs` – how many jobs run at once (default 2). The others wait in line. Only one job at a time works on a
   given album folder. With per-tracker folders, a job also claims each folder it places or converts into, until it
-  ends. An upload or cross-upload never replaces, and a conversion never writes into, a folder another running job
-  was started on or claimed, or one inside or holding it: that tracker, release or conversion is skipped (and the job
-  doesn't count as done), or for an upload's first tracker, the run stops.
+  ends. The claim is refused when another running job was started on that folder, one inside it or one holding it, or
+  claimed one: that tracker, release or conversion is skipped (and the job doesn't count as done), or for an upload's
+  first tracker, the run stops. A waiting job whose folder was replaced fails when its turn comes, before it does
+  anything: start it again.
+  The claim has limits. A job started later on the claimed folder waits, but one started on a folder inside or holding
+  it doesn't, and can find that album half written. A claim doesn't see tag jobs' renames or image jobs, and the
+  steps that remove a folder after an upload don't check it. On a slow or hung network share a claim can stall every
+  job while it is checked.
 
 **Safety.**
 * salmon web speaks plain HTTP. On any address but `127.0.0.1`, your token and login cookie cross the network in

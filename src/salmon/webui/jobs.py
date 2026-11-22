@@ -1,7 +1,8 @@
 """salmon web's jobs: each in a worker thread with an event loop of its own (ADR 0004, section 1).
 
 A step that blocks (hashing a torrent, copying an album, waiting for an answer) stalls its own job only, while the
-server's loop goes on serving, and sending every job's tracker requests (see ``trackers.account``). At most
+server's loop goes on serving, and sending every job's tracker requests (see ``trackers.account``). A claim is the
+exception: ``_claim`` compares folders on the disk, on that loop, so a slow or hung share there stalls them all. At most
 ``[web] max_jobs`` jobs run at once; the others wait their turn in the order they came, and a job waits while
 another works on the same album folder, the folder it was started on or one it found once running
 (``claim_folder``, ``claim_destination``). With a tracker download_directory set, a job that finds another folder in
@@ -327,7 +328,8 @@ async def claim_destination(folder: str) -> str | None:
     """Claim a folder the running job may replace, or converts into, until it ends (``placement.claiming``).
 
     Unlike ``claim_folder``, it is refused also for another job's folder inside it or holding it: replacing it would
-    delete what that job works on. From then on a job started on that folder itself waits, as for any claim.
+    delete what that job works on. It sees the running jobs as they are then. From then on a job started on that
+    folder itself waits, as for any claim, but not one started on a folder inside or holding it.
 
     Returns:
         None once the job holds the folder, or when no salmon web job runs here. Otherwise why not.
