@@ -371,7 +371,10 @@ class PlacedFolders:
         """Where tracker `code`'s conversion of album is made: where this run made that kind, else its directory."""
         if not cfg.per_tracker_directories():
             return cfg.directory.download_directory
-        return self._conversion_dirs.get((album, kind)) or cfg.download_directory_for(code)
+        # Without trailing separators, as made_conversion's dirname gives it to the later trackers: the seedbox tasks
+        # and remove_local_after_copy go by the conversion's path string.
+        own = os.path.dirname(os.path.join(cfg.download_directory_for(code), ""))
+        return self._conversion_dirs.get((album, kind)) or own
 
     def made_conversion(self, album: str, kind: str, folder: str) -> None:
         """Note a conversion the run made, which later trackers are placed from and which is never replaced."""

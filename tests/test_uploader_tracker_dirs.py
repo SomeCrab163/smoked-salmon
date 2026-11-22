@@ -614,6 +614,31 @@ def test_a_conversion_is_made_for_the_first_tracker_that_uploads_it(dirs, conver
     assert not [entry for entry in dirs.red.iterdir() if "MP3" in entry.name]  # No orphan for RED
 
 
+def test_a_conversion_has_one_path_however_its_directory_is_written(monkeypatch, dirs, converted) -> None:
+    # remove_local_after_copy goes by the path: two would let one tracker's remove what another's client seeds.
+    for code in ("red", "ops"):
+        monkeypatch.setattr(getattr(cfg.tracker, code), "download_directory", f"{dirs.red}//")
+    client = "qbittorrent+http://127.0.0.1:9"
+    boxes = [
+        Seedbox(name="home", trackers=["RED"], torrent_client=client),
+        Seedbox(
+            name="nas", type="rclone", url="nas", trackers=["OPS"], remove_local_after_copy=True, torrent_client=client
+        ),
+    ]
+    monkeypatch.setattr(cfg, "seedbox", boxes)
+    monkeypatch.setattr("salmon.uploader.seedbox._rclone_upload_folder", _returning_async(True))
+    converted.manager = UploadManager()
+
+    _convert_for(converted, CONVERSIONS["transcode"], "RED", "OPS")
+    (_, first), (_, second) = converted.uploaded
+    converted.manager.add_upload_task(second, "folder", False, site_code="OPS")
+    anyio.run(converted.manager.execute_upload)
+    converted.manager.remove_local_copies()
+
+    assert Path(first).is_dir()  # RED's local client seeds it
+    assert first == second
+
+
 def test_a_conversion_that_cannot_be_placed_is_skipped_and_the_others_go_on(monkeypatch, dirs, converted) -> None:
     _convert_for(converted, CONVERSIONS["transcode"], "RED")
     name = Path(converted.uploaded[0][1]).name
