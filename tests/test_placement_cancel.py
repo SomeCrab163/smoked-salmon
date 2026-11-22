@@ -154,6 +154,31 @@ def test_a_ctrl_c_once_the_renamed_folder_is_in_place_still_moves_its_spectrals(
     assert len(moved) == 1  # The source must not keep a spectrals folder the upload never deletes
 
 
+def test_a_ctrl_c_once_the_renamed_folder_is_in_place_stops_the_rename(monkeypatch, dirs) -> None:
+    album(dirs.red / "New", tags={"album": "the one there"})
+    monkeypatch.setattr(salmon.tagger.foldername, "generate_folder_name", _returning("New"))
+    _interrupting(monkeypatch, "no such question")
+    remove = shutil.rmtree
+
+    def then_ctrl_c(path: str, *args: Any, **kwargs: Any) -> None:
+        remove(path, *args, **kwargs)
+        if placement.REPLACED_PREFIX in str(path):
+            _ctrl_c()
+
+    monkeypatch.setattr(shutil, "rmtree", then_ctrl_c)
+    went_on: list[bool] = []
+
+    async def rename_then_go_on() -> None:
+        await rename_folder(str(dirs.album), dict(METADATA), True, parent=str(dirs.red))
+        went_on.append(True)  # As rename_files would, before anything waits
+
+    with pytest.raises(KeyboardInterrupt):
+        anyio.run(rename_then_go_on)
+
+    assert went_on == []
+    assert contents(dirs.red / "New") == contents(dirs.album)
+
+
 def test_a_ctrl_c_at_the_retranscode_question_deletes_nothing(monkeypatch, dirs) -> None:
     source = album(dirs.downloads / "Album [FLAC]")
     for track in source.glob("*.flac"):
