@@ -798,6 +798,21 @@ def test_removing_the_old_folder_changes_nothing_a_link_in_it_leads_to(monkeypat
         inner.chmod(0o755)
 
 
+def test_removing_the_old_folder_changes_no_mode_of_a_file_linked_from_elsewhere(monkeypatch, dirs) -> None:
+    other = album(dirs.root / "elsewhere" / "Other")
+    dirs.dest.mkdir(parents=True)
+    for track in other.glob("*.flac"):
+        track.chmod(0o644)
+        os.link(track, dirs.dest / track.name)  # The old folder shares its files with another album
+    (dirs.dest / "Scans").mkdir()
+    (dirs.dest / "Scans").chmod(0o555)  # So that the removal has to make a folder writable
+    answer(monkeypatch, True)
+
+    _place(dirs)
+
+    assert {stat.S_IMODE(track.stat().st_mode) for track in other.glob("*.flac")} == {0o644}
+
+
 def test_a_folder_that_cannot_be_removed_keeps_its_group_and_others_permissions(monkeypatch, dirs) -> None:
     dest = _earlier_with_folders(dirs)
     (dest / "Booklet").chmod(0o555)
