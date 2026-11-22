@@ -30,8 +30,9 @@ async def rename_folder(path, metadata, auto_rename, check=True, parent=None, or
     For scene releases, the name of the original folder is kept untouched, and
     the folder is copied to the download folder.
     `parent` replaces the download folder as the directory the renamed folder goes into.
-    `original` is the folder the user gave, passed only when `path` is a copy of it: the copy is left for its run
-    directory to remove. The source folder is never removed here: see remove_source_folder.
+    `original` is the folder the user gave, passed only when the run works on a copy of it, on every pass: it is never
+    replaced. The copy is left for its run directory to remove. The source folder is never removed here: see
+    remove_source_folder.
     `source` is the folder the run started from: once an earlier rename has left it, a name that leads back to it is
     refused, since replacing it would delete the user's album.
     """
@@ -150,7 +151,7 @@ def _replace_refusal(new_path: str, original: str | None, source: str | None) ->
     if not os.path.isdir(new_path):
         return None
     # The album this run's copy was made from, already under the new name: replacing it would delete it.
-    if original is not None and os.path.samefile(new_path, original):
+    if original is not None and os.path.isdir(original) and os.path.samefile(new_path, original):
         return (
             f"Not replacing {new_path}: it is the album this run works on a copy of. "
             "Rename it, or give this album another name. "
