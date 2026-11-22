@@ -255,7 +255,8 @@ class Release:
     "--path",
     "-p",
     type=click.Path(exists=True, file_okay=False),
-    help="The album folder, if it is not download_directory/<the torrent's folder>. One INPUT only.",
+    help="The album folder, if it is not <the torrent's folder> in SOURCE_TRACKER's download_directory or the global "
+    "one. One INPUT only.",
 )
 @click.option(
     "--group-id",
@@ -301,7 +302,8 @@ async def cross_upload(
     """Upload torrents that are on SOURCE_TRACKER to TARGET_TRACKER, from the files on disk.
 
     INPUT is a SOURCE torrent ID, a SOURCE torrent URL, or a SOURCE .torrent file; at most 5. The files must be
-    the torrent's, unchanged, in download_directory (or at --path).
+    the torrent's, unchanged, in SOURCE_TRACKER's download_directory or the global one (or at --path). When any
+    tracker has a download_directory of its own, they are hardlinked or copied into TARGET_TRACKER's.
 
     \b
     Examples:

@@ -540,7 +540,7 @@ class UploadManager:
         return None
 
     def remove_local_copies(self, keep_because: str | None = None) -> None:
-        """Remove each folder from download_directory that remove_local_after_copy allows, and report each one.
+        """Remove each folder from its download_directory that remove_local_after_copy allows, and report each one.
 
         With keep_because, the run did not end well (a failed upload, an abort, an error): nothing is removed,
         and each folder is reported kept for that reason.

@@ -308,7 +308,7 @@ class Seedbox(BaseStruct):
     enabled: bool = True  # false skips this seedbox
     url: str = ""  # Name of remote in rclone
     type: Literal["local", "rclone"] = "local"
-    directory: str = ""  # Directory when adding torrent to download client
+    directory: str = ""  # Directory when adding torrent to download client. Empty on a local one: the tracker's
     # Trackers this seedbox serves; empty means every tracker, so existing configs are unchanged.
     trackers: list[str] = msgspec.field(default_factory=list)
     flac_only: bool = False  # if true, only upload FLAC files
@@ -318,7 +318,7 @@ class Seedbox(BaseStruct):
     # The label for torrents salmon cross-upload queues here. Unset: label.
     cross_upload_label: str | None = None
     add_paused: bool = False  # If true, add torrents to client in paused state
-    # rclone only: salmon up removes the folder from download_directory once every seedbox has it and seeds it.
+    # rclone only: salmon up removes the folder from its download_directory once every seedbox has it and seeds it.
     remove_local_after_copy: bool = False
 
     def __post_init__(self):
