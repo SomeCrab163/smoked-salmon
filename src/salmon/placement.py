@@ -32,7 +32,7 @@ from salmon.common.files import shares_files
 from salmon.config.validations import holds
 from salmon.errors import UploadError
 from salmon.hardlinks import cannot_link
-from salmon.replace_guard import Entry, folder_state
+from salmon.replace_guard import Entry, folder_state, mount_inside
 
 # Hidden, so neither salmon web's picker nor a torrent client's watcher takes a folder being built for an album.
 BUILDING_PREFIX = ".salmon-placing-"
@@ -173,6 +173,8 @@ def never_replaced(dest: str) -> str | None:
         return "it is a link"
     if os.path.lexists(dest) and not os.path.isdir(dest):
         return "it is not a folder"
+    if os.path.isdir(dest) and (point := mount_inside(dest)) is not None:
+        return f"it is or holds a mount point ({point}), which replacing it would empty"
     return None
 
 
@@ -426,9 +428,9 @@ def _undo(built: str, dest: str, aside: str, new: os.stat_result) -> None:
 
 def _remove_replaced(dest: str, aside: str, replacing: Replacing) -> None:
     # Nothing finds it by dest's path any more, so what differs now was written before or as it was moved.
-    if replacing.changed_below(aside):
+    if why := _not_to_remove(aside, replacing):
         click.secho(
-            f"Replaced {dest}, but the folder that was there changed meanwhile, so it is kept, whole, at {aside}: "
+            f"Replaced {dest}, but the folder that was there {why}, so it is kept, whole, at {aside}: "
             "take what you need from it, then remove it.",
             fg="yellow",
             bold=True,
@@ -442,6 +444,13 @@ def _remove_replaced(dest: str, aside: str, replacing: Replacing) -> None:
             f"remove it yourself ({_reason(error)}).",
             fg="yellow",
         )
+
+
+def _not_to_remove(aside: str, replacing: Replacing) -> str | None:
+    """Why the folder moved aside must not be removed, or None. Asked before it is made writable, too."""
+    if point := mount_inside(aside):  # One made since moves with the folder
+        return f"has a mount point in it ({point})"
+    return "changed meanwhile" if replacing.changed_below(aside) else None
 
 
 class PlacedFolders:
