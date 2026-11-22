@@ -1,8 +1,9 @@
 """Which folders salmon web may list and start jobs on (ADR 0004, section 3).
 
-The roots are ``download_directory`` and each of ``library_dirs``, nothing else. A path is resolved (``realpath``)
-before it is checked against them, and checked before anything else probes it: an answer that differs between a
-missing folder and a refused one would tell a browser what exists outside the roots.
+The roots are ``download_directory``, each tracker's own that exists (#1056), and each of ``library_dirs``, nothing
+else. A path is resolved (``realpath``) before it is checked against them, and checked before anything else probes it:
+an answer that differs between a missing folder and a refused one would tell a browser what exists outside the roots.
+A tracker's root opens nothing outside itself: a withheld folder around it stays withheld (``_is_music_itself``).
 
 Ported from the fork's ``webui/validation.py`` and ``routers/browse.py``: the confinement from chodeus (cdacf355,
 3c69045a), the roots offered side by side from chodeus (a18e0e25), a job refused on a root from styx-techno
@@ -53,10 +54,21 @@ class Root:
         return {"path": self.path, "name": os.path.basename(self.path) or self.path, "library": self.library}
 
 
-def roots() -> list[Root]:
-    """``download_directory``, then each of ``library_dirs``, resolved; read from the config at each call."""
+def _fixed_roots() -> list[Root]:
+    """The roots whatever the trackers' settings: ``download_directory``, then each of ``library_dirs``, resolved."""
     found = [Root(os.path.realpath(cfg.directory.download_directory), False)]
-    found += [Root(os.path.realpath(entry), True) for entry in cfg.directory.library_dirs]
+    return found + [Root(os.path.realpath(entry), True) for entry in cfg.directory.library_dirs]
+
+
+def roots() -> list[Root]:
+    """``download_directory``, each tracker's own that exists, then each of ``library_dirs``, resolved and each once;
+    read from the config at each call.
+
+    A tracker's need not exist yet, as salmon makes it on first write: it is a root once it is there.
+    """
+    download, *libraries = _fixed_roots()
+    trackers = [Root(os.path.realpath(entry), False) for entry in cfg.tracker_directories() if os.path.isdir(entry)]
+    found = [download, *trackers, *libraries]
     unique: dict[str, Root] = {}
     for root in found:
         unique.setdefault(root.path, root)
@@ -256,7 +268,7 @@ def album_folder(raw: str) -> str:
     # Confined before anything probes the path.
     if not _within(path, found):
         raise PathRefused(403, "Refusing a folder outside download_directory and library_dirs.")
-    _check_album(path, found, _withheld_from_albums(found), given=os.path.abspath(raw))
+    _check_album(path, found, _withheld_from_albums(), given=os.path.abspath(raw))
     _refuse_without_audio(path)
     return path
 
@@ -277,7 +289,7 @@ def _check_album(
     Args:
         path: The folder, resolved.
         found: The roots.
-        withheld: ``_withheld_from_albums(found)``, or those of them that may concern `path`.
+        withheld: ``_withheld_from_albums()``, or those of them that may concern `path`.
         given: The path as given, to refuse a symlink; None for a folder the browser lists, which is none.
         libraries: Whether to look for a library directory in it; not for a folder in one that holds none.
         links: Whether to walk the folder for links (#898); a listing past ``MAX_OFFER_WALK`` does not.
@@ -342,7 +354,7 @@ class _Offers:
         self._found = found
         self._withheld = [
             folder
-            for folder in _withheld_from_albums(found)
+            for folder in _withheld_from_albums()
             if _same_or_inside(path, folder) or _same_or_inside(folder, path)
         ]
         self._libraries = cfg.directory.library_inside(path) is not None
@@ -394,35 +406,47 @@ def summary(raw: str) -> dict[str, str]:
 
 def withheld_folders() -> list[str]:
     """The folders no file may be sent from: where .torrent files are kept (they carry the passkey) and the
-    folders of the local seedboxes, resolved. A seedbox folder that is a root or holds one (the default is
-    download_directory) is the music itself and is left out of the list: the content check stands there."""
+    folders of the local seedboxes, resolved. A seedbox folder that is the music itself (``_is_music_itself``: the
+    default is download_directory) is left out of the list: the content check stands there."""
     folders = [cfg.directory.dottorrents_dir]
     if cfg.directory.cross_upload_dottorrents_dir:
         folders.append(cfg.directory.cross_upload_dottorrents_dir)
     for tracker in (cfg.tracker.red, cfg.tracker.ops, cfg.tracker.dic):
         if tracker is not None:
             folders += [folder for folder in (tracker.dottorrents_dir, tracker.cross_upload_dottorrents_dir) if folder]
-    found = roots()
     for seedbox in cfg.seedbox:
         if seedbox.type != "local" or not seedbox.directory:
             continue
         folder = os.path.realpath(seedbox.directory)
-        if not any(_same_or_inside(root.path, folder) for root in found):
+        if not _is_music_itself(folder):
             folders.append(folder)
     return [os.path.realpath(folder) for folder in folders if folder]
+
+
+def _is_music_itself(folder: str) -> bool:
+    """Whether a resolved folder that would be withheld is where the music is: it is or holds download_directory or a
+    library, or it is a tracker's directory.
+
+    Only is, not holds, for a tracker's: /downloads/watch/red must not open the rest of /downloads/watch.
+    """
+    if any(_same_or_inside(root.path, folder) for root in _fixed_roots()):
+        return True
+    trackers = [os.path.realpath(entry) for entry in cfg.tracker_directories()]
+    return any(_same_or_inside(entry, folder) and _same_or_inside(folder, entry) for entry in trackers)
 
 
 def _is_withheld(path: str) -> bool:
     return any(_same_or_inside(path, folder) for folder in withheld_folders())
 
 
-def _withheld_from_albums(found: list[Root]) -> list[str]:
-    """The withheld folders an album folder may not be, be in or hold: those that are not a root and hold none.
+def _withheld_from_albums() -> list[str]:
+    """The withheld folders an album folder may not be, be in or hold: those that are not the music itself
+    (``_is_music_itself``).
 
-    A dottorrents_dir set to download_directory, or above it, would otherwise refuse every album; the .torrent files
-    there are beside the albums, not in them.
+    A dottorrents_dir set to download_directory, or above it, or to a tracker's directory, would otherwise refuse
+    every album there; the .torrent files there are beside the albums, not in them.
     """
-    return [folder for folder in withheld_folders() if not any(_same_or_inside(root.path, folder) for root in found)]
+    return [folder for folder in withheld_folders() if not _is_music_itself(folder)]
 
 
 def image_file(raw: str, *, content: bool = True) -> str:
