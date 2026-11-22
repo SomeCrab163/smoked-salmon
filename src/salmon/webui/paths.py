@@ -242,10 +242,11 @@ def _refuse_links(path: str, walked: _Walked | None = None) -> None:
 def album_folder(raw: str) -> str:
     """The album folder a job may work on: `raw` resolved, the rule every job kind on a folder applies.
 
-    It must resolve inside a root, must not be a root itself or a folder holding a library, must not be a symlink
-    (the job would work on what it leads to, which the CLI never does), must not be, be in or hold a folder of
-    .torrent files or a seedbox's (see withheld_folders), must hold no symlink at all (#898), and must hold audio in
-    it or in its disc folders (``holds_audio``), checked before the job copies or changes anything.
+    It must resolve inside a root, must not be a root itself, a folder holding a library, or a tracker's
+    download_directory or a folder holding one (full of albums, it passes as a box set), must not be a symlink (the
+    job would work on what it leads to, which the CLI never does), must not be, be in or hold a folder of .torrent
+    files or a seedbox's (see withheld_folders), must hold no symlink at all (#898), and must hold audio in it or in
+    its disc folders (``holds_audio``), checked before the job copies or changes anything.
 
     Raises:
         PathRefused: The folder is refused, with a status and a reason a person can act on.
@@ -289,6 +290,11 @@ def _check_album(
         raise PathRefused(403, "Refusing a root folder: pick one album folder in it.")
     if libraries and cfg.directory.library_inside(path) is not None:
         raise PathRefused(403, "Refusing a folder that holds a library directory: pick one album folder in it.")
+    # Whether it exists yet or is a root. Never the global directory: with no key set this refuses nothing.
+    if any(_same_or_inside(os.path.realpath(folder), path) for folder in cfg.tracker_directories()):
+        raise PathRefused(
+            403, "Refusing a tracker's download_directory, or a folder that holds one: pick one album folder in it."
+        )
     if given is not None:
         if os.path.join(os.path.realpath(os.path.dirname(given)), os.path.basename(given)) != path:
             raise PathRefused(403, "Refusing an album folder that is a symlink: open the folder it leads to.")
