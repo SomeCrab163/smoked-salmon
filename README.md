@@ -453,9 +453,14 @@ A tracker without the key uses the global folder, and with no key set nothing ch
   folder in `/data/ops` just before the OPS upload. `salmon cross-upload` makes it in the target's folder.
 * Those folders are hardlinks, or copies with `hardlinks = false`. An album in `library_dirs` is always copied. Where
   a link can't be made, salmon asks whether to copy, once for each folder it makes (default yes).
-* A folder already there is never merged. salmon asks to replace it (default no) and deletes it only once the new one
-  is built. If you keep it, that tracker is skipped; for the first tracker, the run stops. `-yyy` never replaces. So a
-  retry after a failed upload finds the folder the last run made, and asks.
+* A folder already there is never merged. salmon asks to replace it (default no). It then moves that folder to a
+  hidden `.salmon-replaced-*` name beside it, puts it back if the new one can't be put in place, and deletes it once
+  the new one is. If salmon is killed in between, or can't delete all of it, the old folder is under that name.
+  If you keep it, that tracker is skipped; for the first tracker, the run stops. `-yyy` never replaces. So a retry
+  after a failed upload finds the folder the last run made, and asks.
+* The album is renamed into the first tracker's folder even when that tracker then refuses it (its files, its
+  Do-Not-Upload list, or a failed dupe search), and the later trackers' folders are made from it. That folder then
+  has no torrent seeding it: to avoid that, put a tracker that takes the release first with `-t`.
 * salmon never replaces the album a run started from, or a folder that is or holds one of these directories. To
   upload to the tracker whose folder the album is already in, put it first with `-t`, or use `salmon cross-upload`.
 * Conversions are made once, in the folder of the first tracker that uploads them.
@@ -564,7 +569,9 @@ Also under `[web]`:
 * `allowed_hosts` – the names or addresses your browser uses to reach salmon web, besides `localhost` and the bind
   address. A request with any other `Host` is refused. Example: `allowed_hosts = ["seedbox.lan", "192.168.1.20"]`.
 * `max_jobs` – how many jobs run at once (default 2). The others wait in line. Only one job at a time works on a
-  given album folder.
+  given album folder. With per-tracker folders, an upload or cross-upload also never replaces a folder another
+  running job was started on or claimed, or one inside or holding it: that tracker or release is skipped, or for
+  an upload's first tracker, the run stops.
 
 **Safety.**
 * salmon web speaks plain HTTP. On any address but `127.0.0.1`, your token and login cookie cross the network in

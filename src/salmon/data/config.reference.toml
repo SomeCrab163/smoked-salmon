@@ -187,7 +187,8 @@
 # It may be inside directory.download_directory. salmon up renames the album into the first tracker's folder. Each
 # later tracker's folder, and salmon cross-upload's target folder, gets that album hardlinked or copied, as
 # directory.hardlinks says. A folder already there is never merged: salmon asks to replace it (default no; -yyy
-# doesn't replace it).
+# doesn't replace it). The replaced folder is kept under a hidden .salmon-replaced-* name until the new one is in
+# place.
 # download_directory = 'path to dir'
 
 # [tracker.ops]
