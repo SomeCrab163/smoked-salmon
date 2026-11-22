@@ -210,7 +210,7 @@ async def place_folder(
     src: str, dest: str, *, ignore: Ignore | None = None, replacing: Replacing | None = None
 ) -> None:
     """Make dest from src whole or not at all, its conversion record included: src's, or none. `replacing` is the
-    folder the user agreed to replace.
+    folder the user agreed to replace. The caller has a checkpoint once it has done what goes with the new folder.
 
     Raises:
         PlacementDeclined: dest must not be made or replaced, it is not as it was, or a copy was declined.
@@ -235,7 +235,6 @@ async def place_folder(
     except OSError as error:  # shutil.Error is one
         raise PlacementError(f"Could not make {dest} from {src}: {_reason(error)}") from error
     click.secho(f"{'Hardlinked' if linked else 'Copied'} folder to '{dest}'.", fg="yellow")
-    await anyio.lowlevel.checkpoint()  # A run cancelled meanwhile doesn't upload from it
 
 
 def _refuse(src: str, dest: str) -> None:
@@ -537,6 +536,7 @@ class PlacedFolders:
             if isinstance(error, PlacementError):
                 raise
             raise PlacementError(f"Could not make {dest} from {src}: {error}") from error
+        await anyio.lowlevel.checkpoint()  # A run cancelled meanwhile doesn't upload from it
         return dest
 
     async def _make(self, src: str, dest: str) -> None:

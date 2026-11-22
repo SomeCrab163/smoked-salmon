@@ -8,6 +8,7 @@ from copy import copy
 from string import Formatter
 from typing import NoReturn
 
+import anyio.lowlevel
 import asyncclick as click
 
 from salmon import cfg, dryrun, interaction, placement
@@ -110,6 +111,8 @@ async def rename_folder(path, metadata, auto_rename, check=True, parent=None, or
         from salmon.converter.conversions import carry_conversion
 
         carry_conversion(path, new_path)
+    else:
+        await anyio.lowlevel.checkpoint()  # After the spectrals: a run cancelled meanwhile stops, the album whole
     return new_path
 
 

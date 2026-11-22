@@ -18,12 +18,16 @@ import pytest
 from aiohttp.test_utils import TestClient
 from helpers.album_files import album, write_flac
 from helpers.tracker_dirs import building_left, contents, links_fail, tracker_dirs
+from helpers.uploader_dry_run import METADATA, _returning
 from helpers.webui_jobs import AUTH, _finished, _question, _until, _with_app
 
+import salmon.tagger.foldername
 from salmon import cfg, interaction, placement
 from salmon.converter import transcoding
 from salmon.placement import PlacedFolders
+from salmon.tagger.foldername import rename_folder
 from salmon.trackers import base
+from salmon.uploader import spectrals
 from salmon.webui import jobs
 from salmon.webui.jobs import JobKind, JobManager
 
@@ -125,6 +129,29 @@ def test_a_ctrl_c_once_the_folder_is_in_place_stops_the_run_before_its_upload(mo
 
     assert uploading == []
     assert contents(dirs.dest) == contents(dirs.album)
+
+
+def test_a_ctrl_c_once_the_renamed_folder_is_in_place_still_moves_its_spectrals(monkeypatch, dirs) -> None:
+    album(dirs.red / "New", tags={"album": "the one there"})
+    (dirs.album / "Spectrals").mkdir()
+    monkeypatch.setattr(spectrals, "made_by_salmon", lambda _path: True)
+    monkeypatch.setattr(salmon.tagger.foldername, "generate_folder_name", _returning("New"))
+    moved: list[str] = []
+    monkeypatch.setattr(salmon.tagger.foldername, "_move_specs_folder", lambda src, _to: moved.append(src))
+    _interrupting(monkeypatch, "no such question")
+    remove = shutil.rmtree
+
+    def then_ctrl_c(path: str, *args: Any, **kwargs: Any) -> None:
+        remove(path, *args, **kwargs)
+        if placement.REPLACED_PREFIX in str(path):
+            _ctrl_c()
+
+    monkeypatch.setattr(shutil, "rmtree", then_ctrl_c)
+
+    with pytest.raises(KeyboardInterrupt):
+        anyio.run(partial(rename_folder, str(dirs.album), dict(METADATA), True, parent=str(dirs.red)))
+
+    assert len(moved) == 1  # The source must not keep a spectrals folder the upload never deletes
 
 
 def test_a_ctrl_c_at_the_retranscode_question_deletes_nothing(monkeypatch, dirs) -> None:
