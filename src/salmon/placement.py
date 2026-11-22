@@ -386,7 +386,7 @@ def _move_into_place(src: str, built: str, dest: str, replacing: Replacing | Non
     new = os.lstat(built)
     # A sibling: moving a folder within its parent takes no write permission on the folder itself.
     aside = os.path.join(os.path.dirname(dest), f"{REPLACED_PREFIX}{uuid.uuid4().hex[:12]}")
-    record = RecordSwap(dest, aside)
+    record = RecordSwap(src, dest, aside)
     try:
         if replacing is None:
             _refuse_appeared(dest)
@@ -397,7 +397,7 @@ def _move_into_place(src: str, built: str, dest: str, replacing: Replacing | Non
             _refuse_appeared(dest)
         _move(built, dest)
         # Last, as it changes nothing when it fails.
-        record.copy_from(src)
+        record.copy_in()
     except BaseException:
         # A Ctrl-C too, which can come as a rename returns: what is undone is read from the disk.
         _undo(built, dest, aside, new, record, replacing)

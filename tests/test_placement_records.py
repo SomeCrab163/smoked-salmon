@@ -197,3 +197,23 @@ def test_a_placement_done_leaves_no_record_set_aside(monkeypatch, tmp_path, repl
 
     assert [file.name for file in (world.red / ".salmon-conversions").iterdir()] == ["Album.json"]
     assert _recorded(world.dest) == "/new"
+
+
+@pytest.mark.parametrize("stopped", [False, True], ids=["placed", "undone"])
+def test_a_record_folder_both_directories_share_keeps_the_albums_record(monkeypatch, tmp_path, stopped: bool) -> None:
+    world = _world(monkeypatch, tmp_path, "source", replaces=False)
+    (world.red / ".salmon-conversions").symlink_to(world.album.parent / ".salmon-conversions")
+    if stopped:
+        rename = os.rename
+
+        def fail_as_it_moves_in(src: str, dst: str, *args: Any, **kwargs: Any) -> None:
+            rename(src, dst, *args, **kwargs)
+            if placement.BUILDING_PREFIX in str(src):
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(os, "rename", fail_as_it_moves_in)
+
+    with suppress(KeyboardInterrupt):
+        _place(world)
+
+    assert _recorded(world.album) == "/new"  # Setting the destination's aside took this one

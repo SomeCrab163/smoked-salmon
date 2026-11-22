@@ -269,20 +269,27 @@ class RecordSwap:
     moves, and the new one is written once the new folder is in. An undo withdraws the new one before any folder
     moves back, and only then puts back the one set aside. So a kill between two steps leaves no record, never a
     false one.
+
+    Where both names lead to one record (record folders linked together), that is src's and stays as it is.
     """
 
-    def __init__(self, dest: str, aside: str) -> None:
-        self._dest, self._aside = dest, aside
+    def __init__(self, src: str, dest: str, aside: str) -> None:
+        self._src, self._dest, self._aside = src, dest, aside
         self._writing = False
+        self._shared = False
+        with contextlib.suppress(OSError):  # None there, so none shared
+            self._shared = os.path.samefile(_sidecar(src), _sidecar(dest))
 
     def set_aside(self) -> None:
         sidecar = _sidecar(self._dest)
-        if os.path.lexists(sidecar) and _changeable(sidecar):
+        if not self._shared and os.path.lexists(sidecar) and _changeable(sidecar):
             os.replace(sidecar, _sidecar(self._aside))
 
-    def copy_from(self, src: str) -> None:
+    def copy_in(self) -> None:
+        if self._shared:
+            return
         self._writing = True  # First: an interrupt can come as the write returns
-        copy_record(src, self._dest)
+        copy_record(self._src, self._dest)
 
     def withdraw(self) -> None:
         # Only one there: removing none fails where the record folder can't be made, which is what stopped the write.
