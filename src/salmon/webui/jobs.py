@@ -1,8 +1,8 @@
 """salmon web's jobs: each in a worker thread with an event loop of its own (ADR 0004, section 1).
 
 A step that blocks (hashing a torrent, copying an album, waiting for an answer) stalls its own job only, while the
-server's loop goes on serving, and sending every job's tracker requests (see ``trackers.account``). A claim is the
-exception: ``_claim`` compares folders on the disk, on that loop, so a slow or hung share there stalls them all. At most
+server's loop goes on serving, and sending every job's tracker requests (see ``trackers.account``). The exceptions
+read the disk on that loop, so a slow or hung share stalls them all: Start's checks and ``_claim``'s comparison. At most
 ``[web] max_jobs`` jobs run at once; the others wait their turn in the order they came, and a job waits while
 another works on the same album folder, the folder it was started on or one it found once running
 (``claim_folder``, ``claim_destination``). With a tracker download_directory set, a job that finds another folder in

@@ -6,7 +6,7 @@ per release, the dupe check as `up` makes it, the upload of the source format, a
 first failure there stops the run, and says what is already up. With a tracker download_directory set, the album is
 first linked or copied into TARGET's: a release whose folder there is declined, or a conversion refused its folder
 by a placement or a claim (``PlacementDeclined``), is skipped, and the run then fails at its end. A conversion kept
-from being overwritten at the re-transcode question, or failed otherwise, is only left out.
+from being overwritten at the re-transcode question, or that couldn't be made, is only left out.
 
 salmon web's cross-upload job runs the same ``run_cross_upload`` as the command, with the same options.
 

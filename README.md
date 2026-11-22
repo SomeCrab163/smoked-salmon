@@ -403,7 +403,7 @@ source's group and torrent data. The album folder is never changed. The new torr
 when any tracker has a `download_directory` of its own, from the album hardlinked or copied into the target's folder
 (the plan shows where). A release whose folder there is declined is skipped, and the command then exits with 1. A
 conversion that you keep from being overwritten at "Delete it and re-transcode?" (or that `-yyy` keeps) is left out
-without changing the exit status, as is one that fails for another reason.
+without changing the exit status, as is one that can't be made. One whose upload fails stops the run, with 1.
 An rclone seedbox only gets the new torrent, not another copy. `--dry-run` reads from both trackers and sends
 nothing. A cross-upload to DIC is never marked Self-purchased, Self-rip or Exclusive (it is a re-post, so it is
 not asked), and a 24-bit one gets its sample rate as `up` sends it. DIC's support follows chodeus's fork: its
@@ -475,8 +475,8 @@ A tracker without the key uses the global folder, and with no key set nothing ch
   conversion's "Delete it and re-transcode?". The second can name the album the run started from, or another release
   of the same cross-upload, when that album has the conversion's name: read the path before you say yes.
 * Conversions are made once, in the folder of the first tracker that uploads them, and are known by the album they
-  were made from. Started on another tracker's copy of that album, salmon calls them another album's and says to
-  remove them: don't, if they seed. Start from the first tracker's folder.
+  were made from. Started on another tracker's copy of that album, salmon doesn't take them for that album's and
+  says to remove them: don't, if they seed. Start from the first tracker's folder.
 * A local seedbox without a `directory` gets the tracker's folder as save path. One with a `directory` can't serve
   trackers with different folders: salmon refuses that config at start.
 * `remove_source_dir` keeps the album when a tracker was skipped over a folder that is the album, holds it, or is or
@@ -591,8 +591,9 @@ Also under `[web]`:
   anything: start it again.
   The claim has limits. A job started later on the claimed folder waits, but one started on a folder inside or holding
   it doesn't, and can find that album half written. A claim doesn't see tag jobs' renames or image jobs, and the
-  steps that remove a folder after an upload don't check it. On a slow or hung network share a claim can stall every
-  job while it is checked.
+  steps that remove a folder after an upload don't check it. On a slow or hung network share checking a claim, like
+  the check at Start, stalls every job: a tracker request under way can then time out, and an upload end with its
+  outcome unknown though the tracker took it.
 
 **Safety.**
 * salmon web speaks plain HTTP. On any address but `127.0.0.1`, your token and login cookie cross the network in
