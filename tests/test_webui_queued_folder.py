@@ -106,6 +106,7 @@ def _changed_in_place(folder: Path) -> None:
 def _while_it_waits(world: SimpleNamespace, change: Callable[[Path], None]) -> str:
     """Change the album while a job on it waits for the one slot; that job's status once it ended."""
     ended: list[str] = []
+    errors: list[str | None] = []
 
     async def test(_client: TestClient, manager: JobManager) -> None:
         manager.start("busy", {"folder": ""})
@@ -113,9 +114,13 @@ def _while_it_waits(world: SimpleNamespace, change: Callable[[Path], None]) -> s
         assert waiting.status == "queued"
         change(world.album)
         world.free.set()
-        ended.append((await _finished(manager, waiting.id)).status)
+        job = await _finished(manager, waiting.id)
+        ended.append(job.status)
+        errors.append(job.error)
 
     _with_app(test, max_jobs=1)
+    if ended == ["failed"]:
+        assert errors == [jobs.FOLDER_REPLACED]  # Before the job's own checks
     return ended[0]
 
 

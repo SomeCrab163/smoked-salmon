@@ -96,6 +96,13 @@ def test_a_mount_that_went_aside_with_the_folder_is_neither_changed_nor_emptied(
         inner.chmod(0o755)
 
 
+def test_a_mount_is_found_in_a_folder_whose_name_the_table_escapes(dirs) -> None:
+    folder = album(dirs.red / "My Album")  # A space, which the table writes in octal
+    _mounted(dirs, folder / "More")
+
+    assert replace_guard.mount_inside(str(folder)) == str(folder / "More")
+
+
 def test_mounts_elsewhere_are_no_reason_to_refuse(monkeypatch, dirs) -> None:
     beside = album(dirs.red / "Album 2")
     (dirs.dest / "link").symlink_to(beside, target_is_directory=True)
@@ -114,7 +121,7 @@ def test_without_a_mount_table_each_folder_is_asked(monkeypatch, dirs, linked: b
     if linked:
         mounted = album(dirs.root / "elsewhere")
         shutil.rmtree(dirs.inner)
-        dirs.inner.symlink_to(dirs.root, target_is_directory=True)
+        dirs.inner.symlink_to(mounted, target_is_directory=True)
     monkeypatch.setattr(os.path, "ismount", lambda path: os.path.realpath(path) == os.path.realpath(mounted))
     answer(monkeypatch, True)
 

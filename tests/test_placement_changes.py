@@ -101,6 +101,26 @@ def test_a_change_below_the_top_level_is_not_replaced(
     assert building_left(dirs.root) == []
 
 
+@pytest.mark.parametrize("change", ["chmod of a shared file", "now shared"])
+def test_a_change_of_what_is_shared_is_not_replaced(monkeypatch, dirs, change: str) -> None:
+    track, seeded = dirs.disc / "01.flac", dirs.root / "seeded.flac"
+    if change != "now shared":
+        os.link(track, seeded)  # Its ctime says nothing then
+
+    async def change_then_agree(*_args: Any, **_kwargs: Any) -> bool:
+        if change == "now shared":
+            os.link(track, seeded)
+        else:
+            track.chmod(0o600)
+        return True
+
+    monkeypatch.setattr(interaction, "confirm", change_then_agree)
+    reason = "started sharing" if change == "now shared" else "what is in it changed"
+
+    with pytest.raises(PlacementDeclined, match=reason):
+        _place(dirs)
+
+
 def test_a_change_as_it_is_moved_aside_is_kept_and_named(monkeypatch, dirs, capsys) -> None:
     rename = os.rename
 

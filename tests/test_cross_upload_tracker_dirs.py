@@ -412,3 +412,27 @@ def test_a_conversion_whose_output_is_refused_fails_the_run_once_the_rest_is_don
     assert len(run.target.posts()) == 1  # The FLAC, seeded all the same
     assert run.seeded == [("/seed", FOLDER)]
     assert not [entry for entry in dirs.red.iterdir() if "MP3" in entry.name]
+
+
+def test_a_downconversion_declined_its_folder_fails_the_run_too(monkeypatch, dirs) -> None:
+    source = _album(dirs.ops / FOLDER, 96000, bits=24)
+
+    def answer_24bit(folder: Path, torrent_id: int = TORRENT_ID) -> dict[str, Any]:
+        response = _ops_answer(folder, torrent_id)
+        response["torrent"]["encoding"] = "24bit Lossless"
+        return response
+
+    async def declined(*_args: Any, **_kwargs: Any) -> None:
+        raise placement.PlacementDeclined("Not using it: another job works on it.")
+
+    stub_uploader(monkeypatch, {"convert_folder": declined})
+    run = _cross_upload(
+        monkeypatch,
+        dirs,
+        [str(TORRENT_ID), "--downconvert", "-yyy"],
+        input="\n",
+        prepare=_source_has(source, answer=answer_24bit),
+    )
+
+    assert run.result.exit_code == 1, run.output
+    assert f"{TORRENT_ID} (16bit 48.0 kHz)" in run.output
