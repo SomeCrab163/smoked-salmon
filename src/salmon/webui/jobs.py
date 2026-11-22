@@ -4,8 +4,9 @@ A step that blocks (hashing a torrent, copying an album, waiting for an answer) 
 server's loop goes on serving, and sending every job's tracker requests (see ``trackers.account``). At most
 ``[web] max_jobs`` jobs run at once; the others wait their turn in the order they came, and a job waits while
 another works on the same album folder, the folder it was started on or one it found once running
-(``claim_folder``, ``claim_destination``). A question left unanswered for 30 minutes stops its job. Jobs and their
-history live in memory only, and so many of them: the oldest finished jobs are dropped.
+(``claim_folder``, ``claim_destination``). With a tracker download_directory set, a job that finds another folder in
+place of the one it was started on fails (``StartFolder``). A question left unanswered for 30 minutes stops its job.
+Jobs and their history live in memory only, and so many of them: the oldest finished jobs are dropped.
 
 Everything about a job is changed on the server's loop: its thread hands each change over. Every event goes through
 the egress filter where it is made, so what is kept and sent holds no secret.
@@ -41,6 +42,7 @@ from salmon.prepared import Prepared
 from salmon.webui import output
 from salmon.webui.egress import Redactor
 from salmon.webui.interaction import NoAnswerError, WebInteraction
+from salmon.webui.start_folder import StartFolder
 
 # A job waiting its turn is "queued", or while its preparation runs "preparing", then "ready" (see JobKind.prepare).
 Status = Literal["queued", "preparing", "ready", "running", "waiting", "done", "failed", "cancelled", "unknown_outcome"]
@@ -54,6 +56,10 @@ UNKNOWN_OUTCOME = "The request may have reached the tracker: check the site befo
 # Finished jobs kept, oldest dropped first; jobs waiting their turn at most.
 MAX_FINISHED_JOBS = 100
 MAX_QUEUED_JOBS = 100
+FOLDER_REPLACED = (
+    "The folder was replaced or removed while the job waited, so nothing was done: look at what is there now, and "
+    "start it again."
+)
 # Lines of a job's log kept, oldest dropped first.
 MAX_LOG_LINES = 5000
 # Live connections (browser tabs) at once, and events waiting for a slow one before it is cut off.
@@ -153,6 +159,8 @@ class Job:
         self.shown_params = shown_params
         self.title = title
         self.folder = folder
+        # The folder as it was at Start, with a tracker download_directory set: only then does a placement replace one.
+        self.started_on = StartFolder(folder) if folder and cfg.per_tracker_directories() else None
         self.dry_run = dry_run
         self.assume_defaults = assume_defaults
         self.status: Status = "queued"
@@ -680,6 +688,12 @@ class JobManager:
                 return "cancelled", None, None
             job._loop = asyncio.get_running_loop()
             job._task = asyncio.current_task()
+        # Now that it runs, no claim can take the folder from it: before, one saw only the running jobs.
+        if job.started_on is not None:
+            replaced = job.started_on.is_another()
+            job.started_on.close()
+            if replaced:
+                return "failed", FOLDER_REPLACED, None
         _running_job.set(job)
         _running_manager.set(self)
         lines = output.Lines(lambda line, err: self._call(self._log, job, line, err))
@@ -782,6 +796,8 @@ class JobManager:
         job._question_id = None
         job._answer = None
         job.finished_at = _now()
+        if job.started_on is not None:
+            job.started_on.close()  # For a job that never ran
         if job is self._preparing:
             # Its folder goes once the preparation has stopped (_prepared).
             self._stop_preparing(job)
