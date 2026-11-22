@@ -134,7 +134,8 @@ async def execute_downconversion_tasks(
         uploaded: Where to add the URL of each torrent uploaded.
         max_path_length: The longest in-torrent path each conversion may have: the run's limit, the one its album
             folder was checked against. None: gazelle_site's run limit, without the trackers named with -t.
-        placed: What the run placed in the trackers' directories. None: nothing yet.
+        placed: What the run placed in the trackers' directories, told of a conversion declined its folder. None:
+            nothing yet.
     """
     if uploaded is None:
         uploaded = []
@@ -165,6 +166,7 @@ async def execute_downconversion_tasks(
                 )
             except (UploadError, OSError) as e:
                 click.secho(f"  {e}", fg="red", bold=True)
+                placed.conversion_failed(task["name"], e)
                 continue
             await anyio.sleep(0.1)
 
@@ -241,6 +243,7 @@ async def execute_downconversion_tasks(
                 transcoded_path = await transcode_folder(base_path, task["encoding"], output_dir=output_dir)
             except (UploadError, OSError) as e:
                 click.secho(f"  {e}", fg="red", bold=True)
+                placed.conversion_failed(task["name"], e)
                 continue
             await anyio.sleep(0.1)
 

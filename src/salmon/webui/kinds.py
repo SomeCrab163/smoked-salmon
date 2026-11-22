@@ -9,7 +9,8 @@ it sends what the command sends for the same album and answers, every tracker re
 loop (``trackers.account``), and works on a copy of a library album, as the command does. A conversion (transcode,
 downconvert) or a recompression (compress) runs what ``salmon transcode``, ``salmon downconv`` and ``salmon compress``
 run and sends nothing anywhere: a conversion writes where the command puts it (beside the album, or for a library
-album under download_directory), a recompression writes in place and is refused for a library album or an album
+album under download_directory), and with a tracker's download_directory set it claims that folder first, refused
+when another job works on it. A recompression writes in place and is refused for a library album or an album
 sharing files through a link (``rewrite_refusal``). A tag job runs what ``salmon tag`` runs (``tagger.run_tag``), its
 questions asked in the browser: it sends nothing to a tracker, and tags such an album as a copy renamed into
 download_directory, never in place. A cross-upload runs what ``salmon

@@ -316,7 +316,7 @@ async def claim_folder(folder: str) -> str | None:
 
 
 async def claim_destination(folder: str) -> str | None:
-    """Claim a folder the running job may replace (``placement.claiming``) until it ends.
+    """Claim a folder the running job may replace, or converts into, until it ends (``placement.claiming``).
 
     Unlike ``claim_folder``, it is refused also for another job's folder inside it or holding it: replacing it would
     delete what that job works on. From then on a job started on that folder itself waits, as for any claim.

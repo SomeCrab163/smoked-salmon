@@ -814,3 +814,22 @@ def test_a_rename_whose_record_cannot_be_written_is_undone(monkeypatch, dirs) ->
         records.chmod(0o755)
 
     assert contents(dirs.red / "New") == before
+
+
+def test_a_conversion_whose_output_is_refused_leaves_the_upload_incomplete(monkeypatch, dirs) -> None:
+    async def claim(folder: str) -> str | None:
+        return "another job works on it" if "MP3" in folder else None
+
+    with placement.claiming(claim):
+        run, status = _up(
+            monkeypatch,
+            dirs,
+            _album(dirs.root / "in" / "Album"),
+            "RED",
+            conversions="V0",
+            transcode_folder=transcoding.transcode_folder,
+        )
+
+    assert status == 3, run.result.output
+    assert "another job works on it" in run.result.output
+    assert not [entry for entry in dirs.red.iterdir() if "MP3" in entry.name]

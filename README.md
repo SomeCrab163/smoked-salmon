@@ -569,9 +569,10 @@ Also under `[web]`:
 * `allowed_hosts` – the names or addresses your browser uses to reach salmon web, besides `localhost` and the bind
   address. A request with any other `Host` is refused. Example: `allowed_hosts = ["seedbox.lan", "192.168.1.20"]`.
 * `max_jobs` – how many jobs run at once (default 2). The others wait in line. Only one job at a time works on a
-  given album folder. With per-tracker folders, an upload or cross-upload also never replaces a folder another
-  running job was started on or claimed, or one inside or holding it: that tracker or release is skipped, or for
-  an upload's first tracker, the run stops.
+  given album folder. With per-tracker folders, a job also claims each folder it places or converts into, until it
+  ends. An upload or cross-upload never replaces, and a conversion never writes into, a folder another running job
+  was started on or claimed, or one inside or holding it: that tracker, release or conversion is skipped (and the job
+  doesn't count as done), or for an upload's first tracker, the run stops.
 
 **Safety.**
 * salmon web speaks plain HTTP. On any address but `127.0.0.1`, your token and login cookie cross the network in

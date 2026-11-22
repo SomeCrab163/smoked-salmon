@@ -390,3 +390,25 @@ def test_the_plan_is_shown_for_a_targets_directory_salmon_may_not_read(monkeypat
 
     assert run.result.exit_code == 0, run.output
     assert f"to: {dirs.red / FOLDER}" in run.output
+
+
+def test_a_conversion_whose_output_is_refused_fails_the_run_once_the_rest_is_done(monkeypatch, dirs) -> None:
+    source = _album(dirs.ops / FOLDER)
+
+    async def claim(folder: str) -> str | None:
+        return "another job works on it" if "MP3" in folder else None
+
+    with placement.claiming(claim):
+        run = _cross_upload(
+            monkeypatch,
+            dirs,
+            [str(TORRENT_ID), "--transcode", "V0", "-yyy"],
+            input="\n",
+            prepare=_source_has(source),
+        )
+
+    assert run.result.exit_code == 1, run.output  # D6: a script must not see 0
+    assert f"{TORRENT_ID} (MP3 V0)" in run.output
+    assert len(run.target.posts()) == 1  # The FLAC, seeded all the same
+    assert run.seeded == [("/seed", FOLDER)]
+    assert not [entry for entry in dirs.red.iterdir() if "MP3" in entry.name]

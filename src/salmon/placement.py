@@ -60,7 +60,8 @@ class _LinksUnavailable(Exception):
 
 @contextmanager
 def claiming(take: Claim) -> Iterator[None]:
-    """Run the block, and every task it starts, with each destination taken through `take` before it may be replaced.
+    """Run the block, and every task it starts, with each destination taken through `take` before it may be replaced,
+    and each converter's output before it is written (claim_output).
 
     The command, alone at its terminal, sets none and needs no lock.
     """
@@ -79,6 +80,17 @@ async def claim(dest: str) -> None:
     """
     if (take := _claimer.get()) is not None and (refusal := await take(dest)) is not None:
         raise PlacementDeclined(f"Not using {dest}: {refusal}.")
+
+
+async def claim_output(folder: str) -> None:
+    """Take the folder a converter writes, as a destination: until the job ends no other replaces it, and it is none
+    another works on. Only with a key set, as only then does a placement replace one; a dry run writes into none.
+
+    Raises:
+        PlacementDeclined: Another job works on it, in it or on a folder holding it.
+    """
+    if cfg.per_tracker_directories() and not dryrun.active():
+        await claim(folder)
 
 
 def ensure_directory(folder: str) -> None:
@@ -402,6 +414,7 @@ class PlacedFolders:
         self._declined: list[str] = []  # The destinations declined for a folder the run works from
         self._made: dict[str, str] = {}  # Each folder the run made, and the one it was made from
         self._conversion_dirs: dict[tuple[str, str], str] = {}
+        self._declined_conversions: list[str] = []
 
     def keep(self, *folders: str) -> None:
         """Add folders the run works from, once it knows them."""
@@ -465,6 +478,16 @@ class PlacedFolders:
             return
         self._made[folder] = folder
         self._conversion_dirs.setdefault((album, kind), os.path.dirname(folder))
+
+    def conversion_failed(self, name: str, error: Exception) -> None:
+        """Note why a conversion wasn't made, where it was declined its folder."""
+        if isinstance(error, PlacementDeclined):
+            self._declined_conversions.append(name)
+
+    def take_declined_conversions(self) -> list[str]:
+        """The conversions declined their folder since this was last asked."""
+        names, self._declined_conversions = self._declined_conversions, []
+        return names
 
 
 async def _agree_to_replace(dest: str) -> Replacing:
