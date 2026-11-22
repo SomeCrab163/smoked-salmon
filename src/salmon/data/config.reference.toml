@@ -178,6 +178,8 @@
 # dottorrents_dir = 'path to dir'
 # salmon cross-upload's own folder for this tracker's .torrent files (see directory.cross_upload_dottorrents_dir)
 # cross_upload_dottorrents_dir = 'path to dir'
+# This tracker's music data folder (default: directory.download_directory)
+# download_directory = 'path to dir'
 
 # [tracker.ops]
 # session = 'get-from-site-cookie'
@@ -186,6 +188,8 @@
 # dottorrents_dir = 'path to ops dir'
 # salmon cross-upload's own folder for this tracker's .torrent files (see directory.cross_upload_dottorrents_dir)
 # cross_upload_dottorrents_dir = 'path to ops dir'
+# This tracker's music data folder (default: directory.download_directory)
+# download_directory = 'path to ops dir'
 
 # [tracker.dic]
 # session = 'get-from-site-cookie'
@@ -194,6 +198,8 @@
 # dottorrents_dir = 'path to dic dir'
 # salmon cross-upload's own folder for this tracker's .torrent files (see directory.cross_upload_dottorrents_dir)
 # cross_upload_dottorrents_dir = 'path to dic dir'
+# This tracker's music data folder (default: directory.download_directory)
+# download_directory = 'path to dic dir'
 
 # ===============================
 # SEEDING SETTINGS

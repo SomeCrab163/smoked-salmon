@@ -26,7 +26,7 @@ def _expand_folder(path: str) -> str:
     return os.path.expanduser(path)
 
 
-def _holds(folder: str, path: str) -> bool:
+def holds(folder: str, path: str) -> bool:
     """Whether path is folder or inside it, resolved or as given (commonpath: /music-old is not in /music)."""
     # As given too: an album symlinked into a library is in it, wherever the link points.
     for norm in (_real, _lexical):
@@ -102,16 +102,16 @@ class Directory(BaseStruct):
                 ("cross_upload_dottorrents_dir", self.cross_upload_dottorrents_dir),
                 ("tmp_dir", self.tmp_dir),
             ):
-                if folder and _holds(entry, folder):
+                if folder and holds(entry, folder):
                     raise ValueError(f"library_dirs entry {entry} must not contain {name} ({folder})")
             # salmon replaces and deletes folders in these: renamed copies, conversions, spectrals, clean_tmp_dir.
             for name, folder in (("download_directory", self.download_directory), ("tmp_dir", self.tmp_dir)):
-                if folder and _holds(folder, entry):
+                if folder and holds(folder, entry):
                     raise ValueError(f"library_dirs entry {entry} must not be inside {name} ({folder})")
 
     def library_of(self, path: str) -> str | None:
         """The library_dirs entry path is or is inside, compared resolved and as given, or None."""
-        return next((entry for entry in self.library_dirs if _holds(entry, path)), None)
+        return next((entry for entry in self.library_dirs if holds(entry, path)), None)
 
     def is_library_path(self, path: str) -> bool:
         """Whether path is a library_dirs entry or inside one, compared resolved and as given."""
@@ -119,7 +119,7 @@ class Directory(BaseStruct):
 
     def library_inside(self, path: str) -> str | None:
         """A library_dirs entry that path is or holds, or None."""
-        return next((entry for entry in self.library_dirs if _holds(path, entry)), None)
+        return next((entry for entry in self.library_dirs if holds(path, entry)), None)
 
     def protects(self, path: str) -> bool:
         """Whether changing or deleting path could change a library album: it is in a library or holds one."""
@@ -267,6 +267,8 @@ class GazelleTrackerSettings(BaseStruct):
     dottorrents_dir: str | None = None
     # Where salmon cross-upload writes this tracker's .torrent files. Unset: see Cfg.cross_upload_dottorrents_dir.
     cross_upload_dottorrents_dir: str | None = None
+    # Where this tracker's music data goes. Unset: directory.download_directory.
+    download_directory: str | None = None
 
     def __post_init__(self):
         if self.dottorrents_dir:
@@ -649,3 +651,25 @@ class Cfg(BaseStruct):
         return (
             settings.cross_upload_dottorrents_dir if settings else None
         ) or self.directory.cross_upload_dottorrents_dir
+
+    def download_directory_for(self, code: str | None) -> str:
+        """Where tracker `code`'s music data goes: its download_directory, else the global one."""
+        settings: GazelleTrackerSettings | None = getattr(self.tracker, code.lower(), None) if code else None
+        return (settings.download_directory if settings else None) or self.directory.download_directory
+
+    def per_tracker_directories(self) -> bool:
+        """Whether any tracker has a download_directory of its own. Without one, nothing about them applies."""
+        return bool(self.tracker_directories())
+
+    def tracker_directories(self) -> list[str]:
+        """Each tracker's own download_directory that is set, whether or not it exists yet."""
+        configured: list[GazelleTrackerSettings | None] = [getattr(self.tracker, code) for code in _TRACKER_CODES]
+        return [settings.download_directory for settings in configured if settings and settings.download_directory]
+
+    def data_directories(self) -> list[str]:
+        """The folders salmon puts music data in: the global download_directory, then the trackers'."""
+        return [self.directory.download_directory, *self.tracker_directories()]
+
+    def data_directory_inside(self, path: str) -> str | None:
+        """One of data_directories that path is or holds, or None."""
+        return next((folder for folder in self.data_directories() if holds(path, folder)), None)
