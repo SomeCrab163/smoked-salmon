@@ -262,6 +262,43 @@ def copy_record(old: str, new: str) -> None:
         record_conversion(new, **_without_output(facts))
 
 
+class RecordSwap:
+    """dest's record while a placement puts a copy of another folder at dest: at no moment is it another folder's.
+
+    The record there is set aside, under the name `aside` (dest's folder's while that is replaced), before any folder
+    moves, and the new one is written once the new folder is in. An undo withdraws the new one before any folder
+    moves back, and only then puts back the one set aside. So a kill between two steps leaves no record, never a
+    false one.
+    """
+
+    def __init__(self, dest: str, aside: str) -> None:
+        self._dest, self._aside = dest, aside
+        self._writing = False
+
+    def set_aside(self) -> None:
+        sidecar = _sidecar(self._dest)
+        if os.path.lexists(sidecar) and _changeable(sidecar):
+            os.replace(sidecar, _sidecar(self._aside))
+
+    def copy_from(self, src: str) -> None:
+        self._writing = True  # First: an interrupt can come as the write returns
+        copy_record(src, self._dest)
+
+    def withdraw(self) -> None:
+        # Only one there: removing none fails where the record folder can't be made, which is what stopped the write.
+        if self._writing and os.path.lexists(_sidecar(self._dest)):
+            _remove_record(self._dest)
+
+    def put_back(self) -> None:
+        held = _sidecar(self._aside)
+        if os.path.lexists(held):
+            os.replace(held, _sidecar(self._dest))
+
+    def discard(self) -> None:
+        if os.path.lexists(_sidecar(self._aside)):
+            forget_conversion(self._aside)
+
+
 def forget_conversion(folder: str) -> None:
     """Remove the record of a folder that is gone. Nothing is removed where record_conversion writes nothing."""
     try:
@@ -272,11 +309,15 @@ def forget_conversion(folder: str) -> None:
 
 def _remove_record(folder: str) -> None:
     sidecar = _sidecar(folder)
-    record_dir = os.path.dirname(sidecar)
-    if cfg.directory.protects(record_dir) or cfg.directory.protects(os.path.dirname(record_dir)):
+    if not _changeable(sidecar):
         return
     with contextlib.suppress(FileNotFoundError):
         os.remove(sidecar)
+
+
+def _changeable(sidecar: str) -> bool:
+    record_dir = os.path.dirname(sidecar)
+    return not (cfg.directory.protects(record_dir) or cfg.directory.protects(os.path.dirname(record_dir)))
 
 
 def _usable(data: Any, folder: str) -> bool:

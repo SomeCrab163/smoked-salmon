@@ -22,7 +22,7 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 import anyio.lowlevel
 import asyncclick as click
@@ -33,6 +33,9 @@ from salmon.config.validations import holds
 from salmon.errors import UploadError
 from salmon.hardlinks import cannot_link
 from salmon.replace_guard import Entry, folder_state, mount_inside
+
+if TYPE_CHECKING:
+    from salmon.converter.conversions import RecordSwap
 
 # Hidden, so neither salmon web's picker nor a torrent client's watcher takes a folder being built for an album.
 BUILDING_PREFIX = ".salmon-placing-"
@@ -359,8 +362,9 @@ async def _agree_to_copy(src: str, dest: str, why: str) -> None:
 
 
 def _move_into_place(src: str, built: str, dest: str, replacing: Replacing | None) -> None:
-    """Rename the finished folder to dest and give it src's conversion record, all or nothing: whatever stops either,
-    the folder to replace is put back.
+    """Rename the finished folder to dest and give it src's conversion record. An error or a Ctrl-C in either is
+    undone as far as it can be: the folder to replace is put back with its record, or kept and named. A kill can
+    leave the folder to replace at its hidden name and a folder without its record, never with another's.
 
     Nothing is awaited from the checks to the rename. Another job or program may have changed dest while a question
     waited or the copy was made, so they are made again here, but for the reading of all of dest, done just before:
@@ -370,26 +374,36 @@ def _move_into_place(src: str, built: str, dest: str, replacing: Replacing | Non
     if replacing is not None and (change := replacing.changed_itself(dest)) is not None:
         raise _changed(dest, change)
     # Imported here: the converter package imports the tagger, which imports this module.
-    from salmon.converter.conversions import copy_record
+    from salmon.converter.conversions import RecordSwap
 
     new = os.lstat(built)
     # A sibling: moving a folder within its parent takes no write permission on the folder itself.
     aside = os.path.join(os.path.dirname(dest), f"{REPLACED_PREFIX}{uuid.uuid4().hex[:12]}")
+    record = RecordSwap(dest, aside)
     try:
+        if replacing is None:
+            _refuse_appeared(dest)
+        # Before any folder moves: whatever then stops it, no folder at that name has another's record.
+        record.set_aside()
         if replacing is not None:
             os.rename(dest, aside)
-        # os.rename silently replaces an empty folder on POSIX.
-        if os.path.lexists(dest):
-            raise PlacementDeclined(f"Not replacing {dest}: it appeared while salmon was working.")
+            _refuse_appeared(dest)
         _move(built, dest)
-        # Last, as it changes nothing when it fails: a record left at the name would describe another folder.
-        copy_record(src, dest)
+        # Last, as it changes nothing when it fails.
+        record.copy_from(src)
     except BaseException:
         # A Ctrl-C too, which can come as a rename returns: what is undone is read from the disk.
-        _undo(built, dest, aside, new)
+        _undo(built, dest, aside, new, record, replacing)
         raise
+    record.discard()
     if replacing is not None:
         _remove_replaced(dest, aside, replacing)
+
+
+def _refuse_appeared(dest: str) -> None:
+    # os.rename silently replaces an empty folder on POSIX.
+    if os.path.lexists(dest):
+        raise PlacementDeclined(f"Not replacing {dest}: it appeared while salmon was working.")
 
 
 def _changed(dest: str, change: str) -> PlacementDeclined:
@@ -410,16 +424,20 @@ def _move(folder: str, to: str) -> None:
                 os.chmod(folder if os.path.lexists(folder) else to, mode)
 
 
-def _undo(built: str, dest: str, aside: str, new: os.stat_result) -> None:
-    """Take the new folder out of dest and put back the one moved aside, as far as either happened."""
+def _undo(
+    built: str, dest: str, aside: str, new: os.stat_result, record: "RecordSwap", replacing: Replacing | None
+) -> None:
+    """Take the new folder out of dest and put back the one moved aside, as far as either happened, and the record
+    with it."""
     try:
+        record.withdraw()  # First, so that a step failing after it leaves the old folder no record of the new one
         if os.path.lexists(dest) and os.path.samestat(os.lstat(dest), new):
             _move(dest, built)  # Removed with the folder it was built in
-        if not os.path.lexists(aside):
-            return
-        if not os.path.lexists(dest):
+        if os.path.lexists(aside) and not os.path.lexists(dest):
             os.rename(aside, dest)
-            return
+        # Only to the folder it is of, or to the name it was left at: never to another that appeared there.
+        if not os.path.lexists(dest) or (replacing and os.path.samestat(os.lstat(dest), replacing.folder)):
+            record.put_back()
     except OSError as error:
         click.secho(f"Could not undo the placement at {dest}: {error}", fg="red")
     if os.path.lexists(aside):
