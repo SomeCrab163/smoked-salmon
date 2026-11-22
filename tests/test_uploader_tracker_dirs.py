@@ -749,6 +749,19 @@ def test_remove_source_dir_still_removes_a_source_no_tracker_was_skipped_over(mo
     assert not source.exists()
 
 
+def test_remove_source_dir_keeps_an_album_the_skipped_trackers_folder_links_to(monkeypatch, dirs) -> None:
+    monkeypatch.setattr(cfg.upload.formatting, "remove_source_dir", True)
+    source = _album(dirs.root / "in" / "Album")
+    dirs.ops.mkdir(parents=True)
+    (dirs.ops / RENAMED).symlink_to(source, target_is_directory=True)
+
+    run, status = _up(monkeypatch, dirs, source, "RED", "OPS")
+
+    assert status == 3, run.result.output
+    assert len(list((dirs.ops / RENAMED).glob("*.flac"))) == 2  # The link still leads to the album
+    assert f"remove_source_dir is on, but {source} is kept" in run.result.output
+
+
 @pytest.mark.parametrize("holding", [False, True], ids=["a data directory", "holding one"])
 def test_remove_source_dir_never_removes_a_data_directory(monkeypatch, dirs, holding) -> None:
     monkeypatch.setattr(cfg.upload.formatting, "remove_source_dir", True)

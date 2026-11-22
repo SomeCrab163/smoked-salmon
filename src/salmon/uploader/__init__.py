@@ -673,10 +673,11 @@ async def upload(
         )
         # Once the run is done: an abort after the folder rename keeps the source folder, so a re-run can use it.
         final, uploaded, aborted, only_here = result or (None, False, False, None)
-        if cfg.upload.formatting.remove_source_dir and original is None and placed.skipped_over(path):
-            # A tracker's copy would have replaced it, so that tracker was skipped: removing it would undo that (#1056).
+        if cfg.upload.formatting.remove_source_dir and original is None and (kept_for := placed.skipped_over(path)):
+            # That folder was left as it was: removing what it is, holds or links into would undo that (#1056).
             return click.secho(
-                f"remove_source_dir is on, but {path} is kept: a tracker was skipped rather than replace it.",
+                f"remove_source_dir is on, but {path} is kept: {kept_for}, which a tracker was skipped over, "
+                "is it, holds it or links into it.",
                 fg="yellow",
             )
         await remove_source_folder(path, final, original, uploaded=uploaded, aborted=aborted, only_here=only_here)

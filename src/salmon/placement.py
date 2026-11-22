@@ -32,7 +32,7 @@ from salmon.common.files import shares_files
 from salmon.config.validations import holds
 from salmon.errors import UploadError
 from salmon.hardlinks import cannot_link
-from salmon.replace_guard import Entry, folder_state, mount_inside
+from salmon.replace_guard import Entry, folder_state, links_in, mount_inside
 
 if TYPE_CHECKING:
     from salmon.converter.conversions import RecordSwap
@@ -494,7 +494,7 @@ class PlacedFolders:
             keep: The folders the run works from: its source, the album given, the first folder.
         """
         self._keep = keep
-        self._declined: list[str] = []  # The destinations declined for a folder the run works from
+        self._skipped: list[str] = []  # The destinations a tracker was skipped over, whatever the reason
         self._made: dict[str, str] = {}  # Each folder the run made, and the one it was made from
         self._conversion_dirs: dict[tuple[str, str], str] = {}
         self._declined_conversions: list[str] = []
@@ -504,8 +504,13 @@ class PlacedFolders:
         self._keep += folders
 
     def skipped_over(self, folder: str) -> str | None:
-        """A destination declined because it is folder or holds it, or None."""
-        return next((dest for dest in self._declined if holds(dest, folder)), None)
+        """A destination a tracker was skipped over that needs folder, or None: it is or holds it, or is or holds a
+        link into it, which would lead nowhere without it. Read as they are now.
+        """
+        for dest in self._skipped:
+            if holds(dest, folder) or any(holds(folder, os.path.realpath(link)) for link in links_in(dest)):
+                return dest
+        return None
 
     async def place(self, src: str, code: str) -> str:
         """The folder tracker `code` uploads and seeds src from, made if it is not there.
@@ -532,6 +537,7 @@ class PlacedFolders:
         try:
             await self._make(src, dest)
         except (OSError, PlacementError) as error:
+            self._skipped.append(dest)
             await anyio.lowlevel.checkpoint()  # A cancelled run doesn't go on to the next tracker
             if isinstance(error, PlacementError):
                 raise
@@ -543,7 +549,6 @@ class PlacedFolders:
         if (reason := never_replaced(dest)) is not None:
             raise PlacementDeclined(f"Not using {dest}: {reason}.")
         if (reason := overlap(dest, src, *self._keep, *self._made)) is not None:
-            self._declined.append(dest)
             raise PlacementDeclined(f"Not using {dest}: {reason}.", kept=True)
         await claim(dest)
         replacing = await _agree_to_replace(dest) if os.path.lexists(dest) else None

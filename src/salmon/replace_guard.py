@@ -1,8 +1,10 @@
-"""What placement checks of a folder before it replaces and deletes it (#1056). It only reads."""
+"""What placement reads of a folder before one is deleted: one to replace, or the album a skipped folder links into
+(#1056). It only reads."""
 
 import os
 import re
 import stat
+from collections.abc import Iterator
 
 from salmon.containment import is_within
 
@@ -44,6 +46,17 @@ def _entry_state(entry: os.stat_result) -> tuple[int, ...]:
         entry.st_mtime_ns,
         entry.st_ctime_ns if own_ctime else 0,
     )
+
+
+def links_in(path: str) -> Iterator[str]:
+    """path if it is a symlink or junction, else each one below it, following none."""
+    if os.path.islink(path) or os.path.isjunction(path):
+        yield path
+        return
+    for root, folders, files in os.walk(path):
+        below = [os.path.join(root, name) for name in (*folders, *files)]
+        yield from (entry for entry in below if os.path.islink(entry) or os.path.isjunction(entry))
+        folders[:] = [name for name in folders if not os.path.isjunction(os.path.join(root, name))]
 
 
 def mount_inside(folder: str) -> str | None:
