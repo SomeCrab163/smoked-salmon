@@ -780,6 +780,9 @@ def test_a_folder_that_appears_as_the_old_one_is_moved_aside_is_not_replaced(mon
 
 def test_removing_the_old_folder_changes_nothing_a_link_in_it_leads_to(monkeypatch, dirs) -> None:
     outside = album(dirs.library / "Album")
+    inner = outside / "Scans"  # What a walk through the link would reach and make writable
+    inner.mkdir()
+    inner.chmod(0o555)
     outside.chmod(0o555)
     try:
         dest = _earlier_with_folders(dirs)
@@ -788,10 +791,11 @@ def test_removing_the_old_folder_changes_nothing_a_link_in_it_leads_to(monkeypat
 
         _place(dirs)
 
-        assert stat.S_IMODE(outside.stat().st_mode) == 0o555
-        assert sorted(file.name for file in outside.iterdir()) == ["01.flac", "02.flac"]
+        assert [stat.S_IMODE(folder.stat().st_mode) for folder in (outside, inner)] == [0o555, 0o555]
+        assert sorted(file.name for file in outside.iterdir()) == ["01.flac", "02.flac", "Scans"]
     finally:
         outside.chmod(0o755)
+        inner.chmod(0o755)
 
 
 def test_a_folder_that_cannot_be_removed_keeps_its_group_and_others_permissions(monkeypatch, dirs) -> None:
