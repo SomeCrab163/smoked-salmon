@@ -186,6 +186,21 @@ def test_a_folder_recreated_during_the_renames_question_is_not_replaced(monkeypa
     assert [file.name for file in dest.iterdir()] == ["new download.flac"]
 
 
+def test_a_folder_removed_while_the_rename_claims_it_stops_the_rename(monkeypatch, dirs) -> None:
+    dest = _earlier(dirs.red / "New")
+    source = album(dirs.root / "in" / "New")
+    before = contents(source)
+    answer(monkeypatch, True)
+
+    async def another_job_removes_it(_dest: str) -> None:
+        shutil.rmtree(dest)  # As another salmon web job may, while the claim waits for the server's loop
+
+    with placement.claiming(another_job_removes_it), pytest.raises(click.Abort):
+        _rename(monkeypatch, source, "New", dirs.red)
+
+    assert contents(source) == before
+
+
 def test_a_run_under_yyy_aborts_at_a_folder_already_there(monkeypatch, dirs) -> None:
     before = contents(_earlier(dirs.red / RENAMED))
 

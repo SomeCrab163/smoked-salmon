@@ -151,7 +151,10 @@ async def _confirm_replacing(
         # confirm doesn't answer by itself: it would wait at the terminal.
         if await interaction.assume_defaults():
             _abort(f"Not replacing {new_path} with -yyy (upload.yes_all): it exists already.")
-        replacing = Replacing.of(new_path)
+        try:
+            replacing = Replacing.of(new_path)
+        except OSError as error:  # Another salmon web job can remove it while the claim waits
+            _abort(f"Not renaming into {new_path}: {error}.")
     # An earlier run's renamed folder shares its files through hardlinks, and a torrent may seed from it.
     shared = replacing.shared if replacing else shares_files(new_path)
     if check and not await interaction.confirm(
