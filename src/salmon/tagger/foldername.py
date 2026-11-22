@@ -435,6 +435,9 @@ async def remove_source_folder(
     if cfg.directory.protects(source):
         click.secho(f"Not removing {source}: it is in library_dirs, or holds one.", fg="yellow")
         return
+    if (reason := placement.data_directory_refusal(source)) is not None:
+        click.secho(f"remove_source_dir is on, but {source} is kept: {reason}.", fg="yellow")
+        return
     if not uploaded:
         click.secho(f"remove_source_dir is on, but {source} is kept: nothing was uploaded.", fg="yellow")
         return

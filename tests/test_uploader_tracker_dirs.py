@@ -23,13 +23,14 @@ from test_uploader_dry_run import (
 from torf import Torrent
 
 import salmon.tagger.foldername
+import salmon.uploader
 from salmon import cfg, interaction, placement
 from salmon.config.validations import Seedbox
 from salmon.converter import downconverting, transcoding
 from salmon.converter.conversions import conversion_of, record_conversion
 from salmon.errors import RequestFailedError, UploadError
 from salmon.placement import PlacedFolders, PlacementDeclined, PlacementError, Replacing
-from salmon.tagger.foldername import rename_folder
+from salmon.tagger.foldername import remove_source_folder, rename_folder
 from salmon.trackers.ops import OpsApi
 from salmon.trackers.red import RedApi
 from salmon.uploader import conversion_upload, record
@@ -695,3 +696,70 @@ def _comparable(name: str, value: Any, site: str) -> Any:
     if name == "file_input":
         return [(str(file), file.size) for file in Torrent.read_stream(value[1]).files]
     return value.replace(site, "TRACKER") if isinstance(value, str) else value
+
+
+# --- The other deletes ------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("conversions", ["none", "V0"])
+def test_remove_source_dir_keeps_the_album_a_tracker_was_skipped_over(monkeypatch, dirs, conversions) -> None:
+    monkeypatch.setattr(cfg.upload.formatting, "remove_source_dir", True)
+    source = _album(dirs.ops / RENAMED)  # Where OPS's copy would go: never replaced (D2)
+
+    run, status = _up(monkeypatch, dirs, source, "RED", "OPS", conversions=conversions)
+
+    assert status == 3, run.result.output
+    assert len(list(source.glob("*.flac"))) == 2
+    assert f"remove_source_dir is on, but {source} is kept" in run.result.output
+
+
+def test_remove_source_dir_still_removes_a_source_no_tracker_was_skipped_over(monkeypatch, dirs) -> None:
+    monkeypatch.setattr(cfg.upload.formatting, "remove_source_dir", True)
+    source = _album(dirs.root / "in" / "Album")
+    _earlier(dirs.ops / RENAMED)  # OPS is skipped, over another folder
+
+    run, status = _up(monkeypatch, dirs, source, "RED", "OPS")
+
+    assert status == 3, run.result.output
+    assert not source.exists()
+
+
+@pytest.mark.parametrize("holding", [False, True], ids=["a data directory", "holding one"])
+def test_remove_source_dir_never_removes_a_data_directory(monkeypatch, dirs, holding) -> None:
+    monkeypatch.setattr(cfg.upload.formatting, "remove_source_dir", True)
+    given = dirs.ops
+    if holding:
+        monkeypatch.setattr(cfg.tracker.ops, "download_directory", str(dirs.ops / "ops"))
+    _album(given)
+    final = album(dirs.red / RENAMED)
+    before = contents(given)
+
+    anyio.run(partial(remove_source_folder, str(given), str(final), only_here=[]))
+
+    assert contents(given) == before
+
+
+@pytest.mark.parametrize("holding", [False, True], ids=["a data directory", "holding one"])
+def test_delete_music_folder_never_deletes_a_data_directory(monkeypatch, dirs, holding) -> None:
+    given = album(dirs.ops)
+    if holding:
+        monkeypatch.setattr(cfg.tracker.ops, "download_directory", str(dirs.ops / "ops"))
+    before = contents(given)
+    asked = answer(monkeypatch, True)
+
+    anyio.run(partial(salmon.uploader._delete_after_abort, str(given), str(given), None, None, ask_again=True))
+
+    assert asked == []
+    assert contents(given) == before
+
+
+def test_with_no_key_both_deletes_are_as_before(monkeypatch, dirs) -> None:
+    monkeypatch.setattr(cfg.upload.formatting, "remove_source_dir", True)
+    monkeypatch.setattr(cfg.tracker.red, "download_directory", None)
+    monkeypatch.setattr(cfg.tracker.ops, "download_directory", None)
+    source, deleted = album(dirs.root / "source"), album(dirs.root / "deleted")
+
+    anyio.run(partial(remove_source_folder, str(source), str(album(dirs.downloads / "New")), only_here=[]))
+    anyio.run(partial(salmon.uploader._delete_after_abort, str(deleted), str(deleted), None, None))
+
+    assert not source.exists() and not deleted.exists()

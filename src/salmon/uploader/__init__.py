@@ -27,7 +27,7 @@ from salmon.errors import (
     RequestError,
     SkipTracker,
 )
-from salmon.placement import PlacedFolders
+from salmon.placement import PlacedFolders, data_directory_refusal
 from salmon.tagger import (
     validate_encoding,
     validate_source,
@@ -635,6 +635,7 @@ async def upload(
         # An ALAC album is uploaded as FLAC: converted in the folder the upload works on, before its checks read it.
         if (refusal := await convert_alac(path, staged)) is not None:
             return click.secho(f"\n{refusal}", fg="red", bold=True)
+        placed = PlacedFolders()
         result = await _upload_staged(
             gazelle_site,
             staged,
@@ -668,9 +669,16 @@ async def upload(
             offer_others=offer_others,
             given_cover_url=given_cover_url,
             given_spectral_urls=given_spectral_urls,
+            placed=placed,
         )
         # Once the run is done: an abort after the folder rename keeps the source folder, so a re-run can use it.
         final, uploaded, aborted, only_here = result or (None, False, False, None)
+        if cfg.upload.formatting.remove_source_dir and original is None and placed.skipped_over(path):
+            # A tracker's copy would have replaced it, so that tracker was skipped: removing it would undo that (#1056).
+            return click.secho(
+                f"remove_source_dir is on, but {path} is kept: a tracker was skipped rather than replace it.",
+                fg="yellow",
+            )
         await remove_source_folder(path, final, original, uploaded=uploaded, aborted=aborted, only_here=only_here)
 
 
@@ -741,6 +749,7 @@ async def _upload_staged(  # noqa: C901
     offer_others: bool = False,
     given_cover_url: str | None = None,
     given_spectral_urls: dict[int, list[str]] | None = None,
+    placed: PlacedFolders | None = None,
 ) -> tuple[str, bool, bool, list[str] | None] | None:
     """Run upload() on a folder that is safe to change; see upload() for the arguments.
 
@@ -755,6 +764,7 @@ async def _upload_staged(  # noqa: C901
             the first tracker's when a tracker has a download_directory of its own.
         original: The folder the user gave, when path is a copy of it: the folder rename says why it is kept, and
             "delete" deletes only the copy.
+        placed: Filled with what the run places in the trackers' directories, for the caller to read.
     """
     remove_downloaded_cover_image = scene or cfg.image.remove_auto_downloaded_cover_image
     # Every tracker the run may reach, in order: those uploaded to without asking, then those it may offer.
@@ -948,6 +958,8 @@ async def _upload_staged(  # noqa: C901
                 click.secho(f"\nNot filling request {request_id}: it is {tracker}'s.", fg="yellow")
                 request_id = None
             tracker = None
+        placed = placed or PlacedFolders()
+        placed.keep(*filter(None, (source_folder, original, path)))
         run = TrackerRun(
             seedbox_uploader=UploadManager(),
             spectral_uploads=spectral_uploads,
@@ -958,7 +970,7 @@ async def _upload_staged(  # noqa: C901
             spectral_urls=spectral_urls,
             spectral_ids=spectral_ids,
             failed_trackers=[gazelle_site.site_string] if first_listed else [],
-            placed=PlacedFolders(*filter(None, (source_folder, original, path))),
+            placed=placed,
         )
         finished = False  # The loop ended by itself: no abort, no exception
         aborted = False
@@ -1332,6 +1344,9 @@ async def _delete_after_abort(
         return click.secho("\nAborting upload...", fg="red")
     if cfg.directory.protects(path):
         click.secho(f"\nNot deleting {path}: it is in library_dirs, or holds one.", fg="yellow", bold=True)
+        return click.secho("\nAborting upload...", fg="red")
+    if (reason := data_directory_refusal(path)) is not None:
+        click.secho(f"\nNot deleting {path}: {reason}.", fg="yellow", bold=True)
         return click.secho("\nAborting upload...", fg="red")
     # salmon web arms the option in the browser before sending it. -yyy asks too: someone typed the d.
     if (

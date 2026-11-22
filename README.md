@@ -461,6 +461,8 @@ A tracker without the key uses the global folder, and with no key set nothing ch
 * Conversions are made once, in the folder of the first tracker that uploads them.
 * A local seedbox without a `directory` gets the tracker's folder as save path. One with a `directory` can't serve
   trackers with different folders: salmon refuses that config at start.
+* `remove_source_dir` keeps the album when a tracker was skipped rather than replace it. Neither it nor
+  `[d]elete music folder` ever deletes one of these directories or a folder that holds one.
 * `salmon tag`, and `salmon transcode` and `salmon downconv` run on their own, still use the global folder where
   they used it before.
 * The folder is created on first write. It must not be inside a `library_dirs` entry or hold one, nor be inside

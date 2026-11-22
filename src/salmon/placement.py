@@ -307,9 +307,18 @@ class PlacedFolders:
             claim_folder: Takes a destination before it may be replaced (salmon web's lock): why not, or None.
         """
         self._keep = keep
+        self._declined: list[str] = []  # The destinations declined for a folder the run works from
         self._claim_folder = claim_folder
         self._made: dict[str, str] = {}  # Each folder the run made, and the one it was made from
         self._conversion_dirs: dict[tuple[str, str], str] = {}
+
+    def keep(self, *folders: str) -> None:
+        """Add folders the run works from, once it knows them."""
+        self._keep += folders
+
+    def skipped_over(self, folder: str) -> str | None:
+        """A destination declined because it is folder or holds it, or None."""
+        return next((dest for dest in self._declined if holds(dest, folder)), None)
 
     async def place(self, src: str, code: str) -> str:
         """The folder tracker `code` uploads and seeds src from, made if it is not there.
@@ -343,6 +352,7 @@ class PlacedFolders:
         if (reason := never_replaced(dest)) is not None:
             raise PlacementDeclined(f"Not using {dest}: {reason}.")
         if (reason := overlap(dest, src, *self._keep, *self._made)) is not None:
+            self._declined.append(dest)
             raise PlacementDeclined(f"Not using {dest}: {reason}.", kept=True)
         if self._claim_folder is not None and (refusal := await self._claim_folder(Path(dest))):
             raise PlacementDeclined(f"Not using {dest}: {refusal}.")
