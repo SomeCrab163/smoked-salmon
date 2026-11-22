@@ -4,8 +4,9 @@ The tagger and the uploader both use it, so it imports neither.
 
 A folder is built in a hidden folder beside its destination and renamed into place. One the user agreed to replace is
 only moved aside for that, to a hidden name beside it: it is put back if the placement fails, and removed only once
-the new one is in place. Whether a link can be made is os.link's answer: st_dev is only a fast check before it, as two
-bind mounts of one filesystem have the same st_dev and take no link between them.
+the new one is in place, and only if nothing in it changed (salmon.replace_guard). Whether a link can be made is
+os.link's answer: st_dev is only a fast check before it, as two bind mounts of one filesystem have the same st_dev and
+take no link between them.
 
 A Ctrl-C, or salmon web's Cancel, only cancels the task, which takes effect where the task next waits. Nothing here
 waits by itself (a question at the terminal, a copy and an answered claim don't), so there is a checkpoint before
@@ -31,6 +32,7 @@ from salmon.common.files import shares_files
 from salmon.config.validations import holds
 from salmon.errors import UploadError
 from salmon.hardlinks import cannot_link
+from salmon.replace_guard import Entry, folder_state
 
 # Hidden, so neither salmon web's picker nor a torrent client's watcher takes a folder being built for an album.
 BUILDING_PREFIX = ".salmon-placing-"
@@ -117,13 +119,28 @@ class Replacing:
 
     folder: os.stat_result  # As it was before the question
     shared: bool  # shares_files(dest) then
+    below: frozenset[Entry]  # folder_state(dest) then
 
     @classmethod
     def of(cls, dest: str) -> Self:
-        return cls(os.lstat(dest), shares_files(dest))
+        return cls(os.lstat(dest), shares_files(dest), folder_state(dest))
 
     def changed(self, dest: str) -> str | None:
-        """Why the folder at dest is no longer the one asked about, or None if it is."""
+        """Why the folder at dest, or anything in it, is no longer as it was asked about, or None. Reads all of it."""
+        if change := self.changed_itself(dest):
+            return change
+        if not self.shared and shares_files(dest):
+            return "it started sharing files with another folder"
+        if self.changed_below(dest):
+            return "what is in it changed"
+        return None
+
+    def changed_below(self, folder: str) -> bool:
+        """Whether what is in the folder differs, wherever it has been moved to since."""
+        return folder_state(folder) != self.below
+
+    def changed_itself(self, dest: str) -> str | None:
+        """Why the folder at dest is no longer the one asked about, or None: from that folder's own entry alone."""
         try:
             now = os.lstat(dest)
         except FileNotFoundError:
@@ -135,8 +152,6 @@ class Replacing:
             self.folder.st_ctime_ns,
         ):
             return "it changed"
-        if not self.shared and shares_files(dest):
-            return "it started sharing files with another folder"
         return None
 
 
@@ -205,6 +220,9 @@ async def place_folder(
         with _building_in(parent) as temp:
             built = os.path.join(temp, os.path.basename(dest))
             linked = await _build(src, built, dest, ignore)
+            # Before the last claim: reading all of it takes time, in which a job can start or a run be cancelled.
+            if replacing is not None and (change := replacing.changed(dest)) is not None:
+                raise _changed(dest, change)
             # Again: a job can have started in it while a question waited or the copy was made. It is also the last
             # point where a cancellation stops the replace.
             await claim(dest)
@@ -343,11 +361,12 @@ def _move_into_place(src: str, built: str, dest: str, replacing: Replacing | Non
     the folder to replace is put back.
 
     Nothing is awaited from the checks to the rename. Another job or program may have changed dest while a question
-    waited or the copy was made, so all of them are made again here.
+    waited or the copy was made, so they are made again here, but for the reading of all of dest, done just before:
+    what changed in it since is found before it would be removed.
     """
     _refuse(src, dest)
-    if replacing is not None and (change := replacing.changed(dest)) is not None:
-        raise PlacementDeclined(f"Not replacing {dest}: {change} while salmon was working.")
+    if replacing is not None and (change := replacing.changed_itself(dest)) is not None:
+        raise _changed(dest, change)
     # Imported here: the converter package imports the tagger, which imports this module.
     from salmon.converter.conversions import copy_record
 
@@ -368,7 +387,11 @@ def _move_into_place(src: str, built: str, dest: str, replacing: Replacing | Non
         _undo(built, dest, aside, new)
         raise
     if replacing is not None:
-        _remove_replaced(dest, aside)
+        _remove_replaced(dest, aside, replacing)
+
+
+def _changed(dest: str, change: str) -> PlacementDeclined:
+    return PlacementDeclined(f"Not replacing {dest}: {change} while salmon was working.")
 
 
 def _move(folder: str, to: str) -> None:
@@ -401,7 +424,16 @@ def _undo(built: str, dest: str, aside: str, new: os.stat_result) -> None:
         click.secho(f"The folder that was at {dest} is kept, whole, at {aside}: move it back.", fg="red", bold=True)
 
 
-def _remove_replaced(dest: str, aside: str) -> None:
+def _remove_replaced(dest: str, aside: str, replacing: Replacing) -> None:
+    # Nothing finds it by dest's path any more, so what differs now was written before or as it was moved.
+    if replacing.changed_below(aside):
+        click.secho(
+            f"Replaced {dest}, but the folder that was there changed meanwhile, so it is kept, whole, at {aside}: "
+            "take what you need from it, then remove it.",
+            fg="yellow",
+            bold=True,
+        )
+        return
     try:
         _remove_folder(aside)
     except OSError as error:
