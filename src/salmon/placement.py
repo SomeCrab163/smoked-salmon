@@ -6,6 +6,10 @@ A folder is built in a hidden folder beside its destination and renamed into pla
 only moved aside for that, to a hidden name beside it: it is put back if the placement fails, and removed only once
 the new one is in place. Whether a link can be made is os.link's answer: st_dev is only a fast check before it, as two
 bind mounts of one filesystem have the same st_dev and take no link between them.
+
+A Ctrl-C, or salmon web's Cancel, only cancels the task, which takes effect where the task next waits. Nothing here
+waits by itself (a question at the terminal, a copy and an answered claim don't), so there is a checkpoint before
+each step that copies, replaces or deletes, and once a placement has ended.
 """
 
 import os
@@ -19,6 +23,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Self
 
+import anyio.lowlevel
 import asyncclick as click
 
 from salmon import cfg, dryrun, interaction
@@ -73,13 +78,15 @@ def claiming(take: Claim) -> Iterator[None]:
 
 
 async def claim(dest: str) -> None:
-    """Take dest for the running job.
+    """Take dest for the running job, unless it was cancelled: what is about to write to dest or delete it calls this.
 
     Raises:
         PlacementDeclined: Another job works on it, in it or on a folder holding it.
     """
     if (take := _claimer.get()) is not None and (refusal := await take(dest)) is not None:
         raise PlacementDeclined(f"Not using {dest}: {refusal}.")
+    # After the hook: an answer that came before the job waited for it doesn't let a cancellation in.
+    await anyio.lowlevel.checkpoint()
 
 
 async def claim_output(folder: str) -> None:
@@ -198,12 +205,14 @@ async def place_folder(
         with _building_in(parent) as temp:
             built = os.path.join(temp, os.path.basename(dest))
             linked = await _build(src, built, dest, ignore)
-            # Again: a job can have started in it while a question waited or the copy was made.
+            # Again: a job can have started in it while a question waited or the copy was made. It is also the last
+            # point where a cancellation stops the replace.
             await claim(dest)
             _move_into_place(src, built, dest, replacing)
     except OSError as error:  # shutil.Error is one
         raise PlacementError(f"Could not make {dest} from {src}: {_reason(error)}") from error
     click.secho(f"{'Hardlinked' if linked else 'Copied'} folder to '{dest}'.", fg="yellow")
+    await anyio.lowlevel.checkpoint()  # A run cancelled meanwhile doesn't upload from it
 
 
 def _refuse(src: str, dest: str) -> None:
@@ -284,6 +293,7 @@ async def _build(src: str, built: str, dest: str, ignore: Ignore | None) -> bool
             # The links made so far go before the question, and before the copy: copy2 onto one is SameFileError.
             _remove_folder(built)
             await _agree_to_copy(src, dest, str(why))
+            await anyio.lowlevel.checkpoint()
     shutil.copytree(src, built, copy_function=shutil.copy2, ignore=ignore)
     return False
 
@@ -448,7 +458,10 @@ class PlacedFolders:
                 raise PlacementDeclined(f"Not replacing {dest}: this run made it, from another folder.")
         try:
             await self._make(src, dest)
-        except OSError as error:
+        except (OSError, PlacementError) as error:
+            await anyio.lowlevel.checkpoint()  # A cancelled run doesn't go on to the next tracker
+            if isinstance(error, PlacementError):
+                raise
             raise PlacementError(f"Could not make {dest} from {src}: {error}") from error
         return dest
 
