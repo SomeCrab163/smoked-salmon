@@ -643,3 +643,214 @@ def test_a_dry_run_makes_nothing_and_asks_nothing(monkeypatch, dirs, capsys, exi
     assert asked == []
     assert contents(dirs.root) == before
     assert ("a real run would ask" in capsys.readouterr().out) is exists
+
+
+# --- A replace that fails part way (D1) ------------------------------------------------------------------------------
+
+
+def _earlier_with_folders(dirs: SimpleNamespace) -> Path:
+    dest = album(dirs.dest, tags={"album": "the old one"})
+    for name in ("Artwork", "Booklet"):
+        (dest / name).mkdir()
+        for number in range(3):
+            (dest / name / f"{number}.jpg").write_bytes(name.encode())
+    return dest
+
+
+def _replaced_left(root: Path) -> list[Path]:
+    return list(root.rglob(".salmon-replaced-*"))
+
+
+@pytest.mark.parametrize("read_only", ["a subfolder", "the folder itself"])
+def test_a_read_only_folder_can_be_replaced(monkeypatch, dirs, read_only) -> None:
+    dest = _earlier_with_folders(dirs)
+    (dest / "Booklet" if read_only == "a subfolder" else dest).chmod(0o555)
+    answer(monkeypatch, True)
+
+    _place(dirs)
+
+    assert contents(dirs.dest) == contents(dirs.album)
+    assert _replaced_left(dirs.root) == []
+
+
+def test_a_replaced_folder_that_cannot_all_be_removed_is_left_and_named(monkeypatch, dirs, capsys) -> None:
+    _earlier_with_folders(dirs)
+    unlink = os.unlink
+
+    def not_the_owner(path: Any, *args: Any, **kwargs: Any) -> None:
+        if os.fspath(path).endswith("2.jpg"):
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", not_the_owner)
+    answer(monkeypatch, True)
+
+    assert _place(dirs) == str(dirs.dest)
+
+    assert contents(dirs.dest) == contents(dirs.album)
+    [left] = _replaced_left(dirs.root)
+    assert str(left) in capsys.readouterr().out
+    assert building_left(dirs.root) == []
+
+
+@pytest.mark.parametrize("stopped", [OSError(errno.EIO, "I/O error"), KeyboardInterrupt()], ids=["error", "Ctrl-C"])
+@pytest.mark.parametrize("when", ["before the move", "after the move"])
+def test_a_replace_whose_last_move_fails_puts_the_old_folder_back(monkeypatch, dirs, stopped, when) -> None:
+    before = contents(_earlier_with_folders(dirs))
+    rename = os.rename
+    failed: list[str] = []
+
+    def fail_into_place(src: str, dst: str, *args: Any, **kwargs: Any) -> None:
+        if placement.BUILDING_PREFIX in src and not failed:
+            failed.append(src)
+            if when == "after the move":  # As a signal that arrives as the rename returns
+                rename(src, dst, *args, **kwargs)
+            raise stopped
+        rename(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", fail_into_place)
+    answer(monkeypatch, True)
+
+    with pytest.raises((PlacementError, KeyboardInterrupt)):
+        _place(dirs)
+
+    assert contents(dirs.dest) == before
+    assert _replaced_left(dirs.root) == []
+    assert building_left(dirs.root) == []
+
+
+def test_a_folder_that_cannot_be_moved_aside_is_untouched(monkeypatch, dirs) -> None:
+    before = contents(_earlier_with_folders(dirs))
+    rename = os.rename
+
+    def in_use(src: str, dst: str, *args: Any, **kwargs: Any) -> None:
+        if src == str(dirs.dest):
+            raise OSError(errno.EBUSY, "Device or resource busy")  # A mount point, or open on Windows
+        rename(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", in_use)
+    answer(monkeypatch, True)
+
+    with pytest.raises(PlacementError):
+        _place(dirs)
+
+    assert contents(dirs.dest) == before
+
+
+def test_an_old_folder_that_cannot_be_put_back_is_kept_and_named(monkeypatch, dirs, capsys) -> None:
+    before = contents(_earlier_with_folders(dirs))
+    rename = os.rename
+
+    def only_the_first(src: str, dst: str, *args: Any, **kwargs: Any) -> None:
+        if src != str(dirs.dest):
+            raise OSError(errno.EIO, "I/O error")
+        rename(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", only_the_first)
+    answer(monkeypatch, True)
+
+    with pytest.raises(PlacementError):
+        _place(dirs)
+
+    [kept] = _replaced_left(dirs.root)
+    assert contents(kept) == before
+    assert str(kept) in capsys.readouterr().out
+
+
+def test_a_folder_that_appears_as_the_old_one_is_moved_aside_is_not_replaced(monkeypatch, dirs, capsys) -> None:
+    before = contents(_earlier_with_folders(dirs))
+    rename = os.rename
+
+    def then_one_appears(src: str, dst: str, *args: Any, **kwargs: Any) -> None:
+        rename(src, dst, *args, **kwargs)
+        if src == str(dirs.dest):
+            dirs.dest.mkdir()  # Empty: os.rename would silently replace it
+
+    monkeypatch.setattr(os, "rename", then_one_appears)
+    answer(monkeypatch, True)
+
+    with pytest.raises(PlacementDeclined, match="appeared"):
+        _place(dirs)
+
+    assert contents(dirs.dest) == {}
+    [kept] = _replaced_left(dirs.root)
+    assert contents(kept) == before
+    assert str(kept) in capsys.readouterr().out
+
+
+def test_removing_the_old_folder_changes_nothing_a_link_in_it_leads_to(monkeypatch, dirs) -> None:
+    outside = album(dirs.library / "Album")
+    outside.chmod(0o555)
+    try:
+        dest = _earlier_with_folders(dirs)
+        (dest / "linked").symlink_to(outside, target_is_directory=True)
+        answer(monkeypatch, True)
+
+        _place(dirs)
+
+        assert stat.S_IMODE(outside.stat().st_mode) == 0o555
+        assert sorted(file.name for file in outside.iterdir()) == ["01.flac", "02.flac"]
+    finally:
+        outside.chmod(0o755)
+
+
+def test_a_folder_that_cannot_be_removed_keeps_its_group_and_others_permissions(monkeypatch, dirs) -> None:
+    dest = _earlier_with_folders(dirs)
+    (dest / "Booklet").chmod(0o555)
+
+    def not_the_owner(*_args: Any, **_kwargs: Any) -> None:
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(os, "unlink", not_the_owner)
+    answer(monkeypatch, True)
+
+    _place(dirs)
+
+    [left] = _replaced_left(dirs.root)
+    assert stat.S_IMODE((left / "Booklet").stat().st_mode) == 0o755
+
+
+def _failing_at(real: Callable[..., Any], failing: int, calls: list[int]) -> Callable[..., Any]:
+    """`real`, with its call number `failing` raising EIO."""
+
+    def call(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        if len(calls) == failing:
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        return real(*args, **kwargs)
+
+    return call
+
+
+@pytest.mark.parametrize("linked", [True, False], ids=["link", "copy"])
+@pytest.mark.parametrize(
+    "call", ["rename", "chmod", "mkdir", "link", "unlink", "rmdir", "lstat", "scandir"], ids=lambda call: f"os.{call}"
+)
+def test_whichever_call_fails_the_destination_is_the_old_folder_or_the_new(
+    monkeypatch, tmp_path, linked: bool, call: str
+) -> None:
+    real = getattr(os, call)
+    failing = 0
+    while True:  # Each of this call that a replace makes fails in a run of its own
+        failing += 1
+        root = tmp_path / str(failing)
+        root.mkdir()
+        found = tracker_dirs(monkeypatch, root)
+        monkeypatch.setattr(cfg.directory, "hardlinks", linked)
+        found.album, found.dest = album(found.downloads / "Album", cover=True), found.red / "Album"
+        old, new = contents(_earlier_with_folders(found)), contents(found.album)
+        answer(monkeypatch, True, True)
+        calls: list[int] = []
+
+        with monkeypatch.context() as faulty:
+            faulty.setattr(os, call, _failing_at(real, failing, calls))
+            try:
+                _place(found)
+            except (PlacementError, OSError):
+                outcome = [old]
+            else:
+                outcome = [new]
+
+        assert contents(found.dest) in outcome, f"call {failing}"
+        if len(calls) < failing:
+            return

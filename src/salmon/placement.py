@@ -2,15 +2,17 @@
 
 The tagger and the uploader both use it, so it imports neither.
 
-A folder is built in a hidden folder beside its destination and renamed into place, and one the user agreed to
-replace is removed only once the new one is built. Whether a link can be made is os.link's answer: st_dev is only a
-fast check before it, as two bind mounts of one filesystem have the same st_dev and take no link between them.
+A folder is built in a hidden folder beside its destination and renamed into place. One the user agreed to replace is
+only moved aside for that, to a hidden name beside it: it is put back if the placement fails, and removed only once
+the new one is in place. Whether a link can be made is os.link's answer: st_dev is only a fast check before it, as two
+bind mounts of one filesystem have the same st_dev and take no link between them.
 """
 
 import os
 import shutil
 import stat
 import tempfile
+import uuid
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -27,6 +29,7 @@ from salmon.hardlinks import cannot_link
 
 # Hidden, so neither salmon web's picker nor a torrent client's watcher takes a folder being built for an album.
 BUILDING_PREFIX = ".salmon-placing-"
+REPLACED_PREFIX = ".salmon-replaced-"
 SHARED_NOTE = " (it shares files with another folder through a hardlink or symlink: a torrent may seed from it)"
 
 Ignore = Callable[[str, list[str]], Iterable[str]]
@@ -183,23 +186,39 @@ def _building_in(parent: str) -> Iterator[str]:
         yield temp
     finally:
         try:
-            _remove_built(temp)
+            _remove_folder(temp)
         except OSError as error:
             click.secho(f"Could not remove {temp}: {error}", fg="yellow")
 
 
-def _remove_built(path: str) -> None:
-    """Remove what salmon was building. An album's read-only folders are copied read-only, so they are made
-    writable first: the folders only, as a file here may be a link to the album's own."""
+def _remove_folder(path: str) -> None:
+    """Remove a folder salmon was building, or one it moved aside to replace. An album's read-only folders are copied
+    read-only, so they are made writable first."""
     if not os.path.isdir(path):
         return
-    with suppress(OSError):
-        os.chmod(path, stat.S_IRWXU)
-    for root, folders, _files in os.walk(path):
-        for name in folders:
-            with suppress(OSError):
-                os.chmod(os.path.join(root, name), stat.S_IRWXU)
+    _make_writable(path)
     shutil.rmtree(path)
+
+
+def _make_writable(folder: str) -> None:
+    """Give the owner write permission on folder and each real folder in it, adding to the mode it has.
+
+    Never on a file, which may be a link to another album's, and never through a symlink or junction: os.chmod
+    follows one, so it would change the folder it leads to, a library's included.
+    """
+    if os.path.islink(folder) or os.path.isjunction(folder):
+        return
+    with suppress(OSError):
+        mode = stat.S_IMODE(os.lstat(folder).st_mode)
+        if mode & stat.S_IRWXU != stat.S_IRWXU:
+            os.chmod(folder, mode | stat.S_IRWXU)
+    try:
+        with os.scandir(folder) as entries:
+            inside = [entry.path for entry in entries if entry.is_dir(follow_symlinks=False)]
+    except OSError:
+        return  # The removal says what it can't remove
+    for path in inside:
+        _make_writable(path)
 
 
 def _link(src: str, dst: str) -> None:
@@ -221,7 +240,7 @@ async def _build(src: str, built: str, dest: str, ignore: Ignore | None) -> bool
             return True
         except _LinksUnavailable as why:
             # The links made so far go before the question, and before the copy: copy2 onto one is SameFileError.
-            _remove_built(built)
+            _remove_folder(built)
             await _agree_to_copy(src, dest, str(why))
     shutil.copytree(src, built, copy_function=shutil.copy2, ignore=ignore)
     return False
@@ -268,33 +287,71 @@ async def _agree_to_copy(src: str, dest: str, why: str) -> None:
 
 
 def _move_into_place(src: str, built: str, dest: str, replacing: Replacing | None) -> None:
-    """Rename the finished folder to dest, removing the one the user agreed to replace first.
+    """Rename the finished folder to dest, all or nothing: whatever stops it, the folder to replace is put back.
 
     Nothing is awaited from the checks to the rename. Another job or program may have changed dest while a question
     waited or the copy was made, so all of them are made again here.
     """
     _refuse(src, dest)
+    if replacing is not None and (change := replacing.changed(dest)) is not None:
+        raise PlacementDeclined(f"Not replacing {dest}: {change} while salmon was working.")
+    new = os.lstat(built)
+    # A sibling: moving a folder within its parent takes no write permission on the folder itself.
+    aside = os.path.join(os.path.dirname(dest), f"{REPLACED_PREFIX}{uuid.uuid4().hex[:12]}")
+    try:
+        if replacing is not None:
+            os.rename(dest, aside)
+        # os.rename silently replaces an empty folder on POSIX.
+        if os.path.lexists(dest):
+            raise PlacementDeclined(f"Not replacing {dest}: it appeared while salmon was working.")
+        _move(built, dest)
+    except BaseException:
+        # A Ctrl-C too, which can come as a rename returns: what is undone is read from the disk.
+        _undo(built, dest, aside, new)
+        raise
     if replacing is not None:
-        if (change := replacing.changed(dest)) is not None:
-            raise PlacementDeclined(f"Not replacing {dest}: {change} while salmon was working.")
-        try:
-            shutil.rmtree(dest)
-        except OSError as error:
-            raise PlacementError(
-                f"Could not remove all of {dest} to replace it, it may be incomplete: {error}"
-            ) from error
-    # os.rename silently replaces an empty folder on POSIX.
-    if os.path.lexists(dest):
-        raise PlacementDeclined(f"Not replacing {dest}: it appeared while salmon was working.")
-    # Moving a folder to another parent takes write permission on the folder itself.
-    mode = stat.S_IMODE(os.stat(built).st_mode)
+        _remove_replaced(dest, aside)
+
+
+def _move(folder: str, to: str) -> None:
+    """Rename a folder into another parent, which takes write permission on the folder itself."""
+    mode = stat.S_IMODE(os.lstat(folder).st_mode)
     read_only = not mode & stat.S_IWUSR
     if read_only:
-        os.chmod(built, mode | stat.S_IWUSR)
-    os.rename(built, dest)
-    if read_only:
-        with suppress(OSError):
-            os.chmod(dest, mode)
+        os.chmod(folder, mode | stat.S_IWUSR)
+    try:
+        os.rename(folder, to)
+    finally:
+        if read_only:
+            with suppress(OSError):
+                os.chmod(folder if os.path.lexists(folder) else to, mode)
+
+
+def _undo(built: str, dest: str, aside: str, new: os.stat_result) -> None:
+    """Take the new folder out of dest and put back the one moved aside, as far as either happened."""
+    try:
+        if os.path.lexists(dest) and os.path.samestat(os.lstat(dest), new):
+            _move(dest, built)  # Removed with the folder it was built in
+        if not os.path.lexists(aside):
+            return
+        if not os.path.lexists(dest):
+            os.rename(aside, dest)
+            return
+    except OSError as error:
+        click.secho(f"Could not undo the placement at {dest}: {error}", fg="red")
+    if os.path.lexists(aside):
+        click.secho(f"The folder that was at {dest} is kept, whole, at {aside}: move it back.", fg="red", bold=True)
+
+
+def _remove_replaced(dest: str, aside: str) -> None:
+    try:
+        _remove_folder(aside)
+    except OSError as error:
+        click.secho(
+            f"Replaced {dest}, but could not remove all of the folder that was there. What is left is at {aside}: "
+            f"remove it yourself ({_reason(error)}).",
+            fg="yellow",
+        )
 
 
 class PlacedFolders:
