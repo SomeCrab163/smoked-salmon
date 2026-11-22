@@ -189,7 +189,8 @@
 # later tracker's folder, and salmon cross-upload's target folder, gets that album hardlinked or copied, as
 # directory.hardlinks says. A folder already there is never merged by these: salmon asks to replace it (default no;
 # -yyy doesn't replace it). The replaced folder is kept under a hidden .salmon-replaced-* name until the new one is in
-# place. One that is or holds a mount point, or that changed while salmon worked, is not replaced.
+# place. One that is or holds a mount point, or that changed while salmon asked or copied, is not replaced. One that
+# changes as it is moved aside is still replaced, kept under the hidden name, and salmon says so.
 # download_directory = 'path to dir'
 
 # [tracker.ops]
