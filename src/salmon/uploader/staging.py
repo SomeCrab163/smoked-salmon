@@ -24,7 +24,8 @@ def staged_source(path: str, scratch: bool) -> Iterator[tuple[str, str | None]]:
 
     An album salmon must not rewrite in place (rewrite_refusal: inside a library_dirs entry, or sharing files with
     another folder through a hardlink or symlink) is always worked on as a copy in a run directory of its own, like
-    a scratch copy, but its rename goes into download_directory, where the renamed copy stays to be seeded.
+    a scratch copy, but its rename goes into download_directory (or, in salmon up with a tracker's
+    download_directory set, the first tracker's), where the renamed copy stays to be seeded.
 
     Args:
         path: The album folder the upload starts from.
@@ -32,7 +33,8 @@ def staged_source(path: str, scratch: bool) -> Iterator[tuple[str, str | None]]:
             removed when the run ends (success, abort or error). Otherwise the upload works on path itself.
 
     Yields:
-        The folder to work on, and the directory its rename stays in (None for download_directory).
+        The folder to work on, and the directory its rename stays in (None for the caller's choice, by default
+        download_directory).
 
     Raises:
         UploadError: If path is or holds a library_dirs entry, or the copy does not fit on the disk or fails.
@@ -100,7 +102,11 @@ def _copy_into(path: str, into: str, scratch: bool, refusal: str | None) -> str:
         )
     click.secho(f"\nCopying {path} ({size / 1e6:.0f} MB) to {dest}. {why}", fg="cyan")
     if not scratch:
-        click.secho(f"The renamed copy goes into {cfg.directory.download_directory} and stays there.", fg="cyan")
+        if cfg.per_tracker_directories():
+            # Not named: salmon up renames it into the first tracker's directory, salmon tag into the global one.
+            click.secho("The renamed copy stays where it is renamed to.", fg="cyan")
+        else:
+            click.secho(f"The renamed copy goes into {cfg.directory.download_directory} and stays there.", fg="cyan")
     try:
         # A real copy: a hardlink shares the inode, so a later tag write would reach the source. Symlinks are
         # followed (symlinks=False), so the copy holds the files they lead to, never a link to them.

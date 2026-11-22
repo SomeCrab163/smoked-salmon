@@ -623,6 +623,9 @@ async def upload(
         dryrun.writing_into(rename_into),
     ):
         original = path if staged != path else None
+        # In this order: with no key set, rename_into stays None. A scratch run keeps its scratch directory.
+        if rename_into is None and cfg.per_tracker_directories():
+            rename_into = cfg.download_directory_for(gazelle_site.site_code)
         # Before the upload's tracker requests (with -g, run_up has fetched the group already): the question covers
         # the conversions the run makes too.
         if (refusal := await foreign_spectrals_refusal(path, staged)) is not None:
@@ -747,7 +750,8 @@ async def _upload_staged(  # noqa: C901
 
     Args:
         conversion: What the folder was converted from, when a converter made it: the upload describes it.
-        rename_into: The directory the renamed folder goes into, instead of download_directory.
+        rename_into: The directory the renamed folder goes into, instead of download_directory: the scratch copy's, or
+            the first tracker's when a tracker has a download_directory of its own.
         original: The folder the user gave, when path is a copy of it: the folder rename says why it is kept, and
             "delete" deletes only the copy.
     """

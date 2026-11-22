@@ -36,10 +36,15 @@ def tracker_dirs(monkeypatch, tmp_path: Path, *codes: str) -> SimpleNamespace:
 
 
 def answer(monkeypatch, *answers: bool) -> list[tuple[str, dict[str, Any]]]:
-    """Answer the confirms in order; each question asked, with its arguments. One question too many fails."""
+    """Answer the confirms in order; each question asked, with its arguments. One question too many fails.
+
+    A rename's question whether to take the new name is always agreed to, and is neither of them.
+    """
     left, asked = list(answers), []
 
     async def confirm(text: str, **kwargs: Any) -> bool:
+        if "replace the original folder name?" in text:
+            return True
         asked.append((text, kwargs))
         assert left, f"a question too many: {text}"
         return left.pop(0)

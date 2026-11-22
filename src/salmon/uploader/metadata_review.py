@@ -84,7 +84,8 @@ async def edit_metadata(
         A tuple of (path, metadata, tags, audio_info) after editing is complete.
 
     Raises:
-        click.Abort: If a scene release fails the integrity check, or a file does not decode.
+        click.Abort: If a scene release fails the integrity check, a file does not decode, or the rename into a
+            tracker's directory was declined (see rename_folder).
         PickOtherResults: If the user went back to the metadata results, before anything was written.
     """
     given = path

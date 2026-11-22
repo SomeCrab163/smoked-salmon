@@ -282,6 +282,7 @@ def _run_up(
     yes_all: bool = True,
     trackers: tuple[str, ...] | None = None,
     renamed: str = RENAMED,
+    real_seedbox_queue: bool = False,
     **fakes: Any,
 ) -> Run:
     """Run `salmon up ALBUM` against the fake tracker: real staging, torrents and forms.
@@ -290,10 +291,16 @@ def _run_up(
     `trackers` are named with -t, each; `()` names none and leaves default_trackers as the test set it.
     The seams that need audio tools, a metadata source or a reviewer are stubbed, `fakes` replace more of them.
     `classes` gives the client class of each site code, RED and OPS by default. `yes_all=False` leaves out -yyy.
-    `renamed` is the folder name the metadata gives the album.
+    `renamed` is the folder name the metadata gives the album. `real_seedbox_queue` is fake_upload_world's.
     """
     tracker, queued, logins = fake_upload_world(
-        monkeypatch, torrents, classes=classes, multi_tracker_upload=multi_tracker_upload, renamed=renamed, **fakes
+        monkeypatch,
+        torrents,
+        classes=classes,
+        multi_tracker_upload=multi_tracker_upload,
+        renamed=renamed,
+        real_seedbox_queue=real_seedbox_queue,
+        **fakes,
     )
     if trackers is None:
         monkeypatch.setattr(cfg.tracker, "default_trackers", ["RED"])
@@ -347,11 +354,13 @@ def fake_upload_world(
     multi_tracker_upload: bool = True,
     tracker: "FakeTracker | None" = None,
     renamed: str = RENAMED,
+    real_seedbox_queue: bool = False,
     **fakes: Any,
 ) -> tuple[FakeTracker, list[tuple[Any, ...]], list[str | None]]:
     """Stub what an upload needs besides the tracker, and send its tracker requests to `tracker`, else a new fake.
 
-    The metadata names the album folder `renamed`.
+    The metadata names the album folder `renamed`. With `real_seedbox_queue` the seedbox tasks are queued and run for
+    real, on a torrent client the test fakes, and none is returned.
 
     Returns:
         The fake tracker (not serving yet), the seedbox tasks the run queues, and the torrent client logins.
@@ -388,7 +397,8 @@ def fake_upload_world(
     monkeypatch.setattr(cfg.upload.requests, "last_minute_dupe_check", False)
     monkeypatch.setattr(cfg.image, "embed_missing_cover", False)
     queued: list[tuple[Any, ...]] = []
-    monkeypatch.setattr(UploadManager, "add_upload_task", lambda _self, *task, **_kw: queued.append(task))
+    if not real_seedbox_queue:
+        monkeypatch.setattr(UploadManager, "add_upload_task", lambda _self, *task, **_kw: queued.append(task))
     # A seedbox whose torrent client is logged into when the upload manager is set up.
     monkeypatch.setattr(cfg, "seedbox", [Seedbox(name="box", torrent_client="qbittorrent+http://127.0.0.1:9")])
     logins: list[str | None] = []
