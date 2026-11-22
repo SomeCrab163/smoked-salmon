@@ -512,7 +512,7 @@ class PlacedFolders:
         for dest in self._skipped:
             if holds(dest, folder):
                 return dest
-            # Not through a whole data directory: a link in one is any other symlink to the album (see the PR's limits).
+            # Not through a whole data directory: a link in one is as any other symlink to the album (see the README).
             if data_directory_refusal(dest) is None and any(
                 holds(folder, os.path.realpath(link)) for link in links_in(dest)
             ):
