@@ -3,11 +3,42 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from itertools import chain
 from typing import Any
+from urllib.parse import urlsplit
 
 from salmon import cfg
 from salmon.common import RE_USELESS_VERSION, fetch_genre, less_uppers, normalize_accents, split_genre
-from salmon.common.strings import join_artists, names_no_artist, reaches_various_threshold, unbracketed
+from salmon.common.strings import (
+    join_artists,
+    names_no_artist,
+    reaches_various_threshold,
+    same_artist_key,
+    split_type_marker,
+    unbracketed,
+)
 from salmon.errors import GenreNotInWhitelist, ScrapeError
+from salmon.sources.base import Answer
+
+
+def scrape_error_with_context(scraper: Any, url: str, error: ScrapeError) -> ScrapeError:
+    """`error` said again with the store, the release's URL and what the store answered (#980).
+
+    The URL has no query or fragment: those can carry tokens, and messages keep request URLs out. The parenthesis
+    holds the scraper's last answer (its status, and its page's title if it had one), and is left out when no answer
+    came back.
+    """
+    store = scraper.store or type(scraper).__name__
+    parts = urlsplit(url)
+    bare = f"{parts.scheme}://{parts.netloc.rpartition('@')[2]}{parts.path}"
+    answer: Answer | None = scraper.last_answer
+    seen = ""
+    if answer:
+        title = f', page titled "{answer.title}"' if answer.title else ""
+        seen = f" (HTTP {answer.status}{title})"
+    reason = str(error).strip().removeprefix(f"{store}: ") or type(error).__name__
+    # The store's status line says what the parenthesis already does.
+    if answer and reason == f"HTTP {answer.status}.":
+        return ScrapeError(f"{store}: could not read the release at {bare}{seen}.", error.payload)
+    return ScrapeError(f"{store}: could not read the release at {bare}{seen}: {reason}", error.payload)
 
 
 class MetadataMixin(ABC):
@@ -16,6 +47,8 @@ class MetadataMixin(ABC):
     is_json_api: bool
     fetch_page: Callable  # HTML path: BaseScraper.fetch_page
     fetch_data: Callable  # JSON path: defined on JSON source bases
+    store: str | None
+    last_answer: Answer | None
 
     # Whether the parser reads the store's credits as it states them (ADR 0007, step 3). Its tracks' credits are then
     # left as read, for the merge to decide, and any credit not marked a guess counts as the store's word. So the
@@ -32,7 +65,19 @@ class MetadataMixin(ABC):
         Scrape the metadata of a release and return a dictionary of scraped data.
         Data may vary depending on the source; unavailable keys will be left
         as None.
+
+        Raises:
+            ScrapeError: If the fetch or the parse fails. Its message names the store, the URL without its query,
+                and the status and title of the answer last received.
         """
+        try:
+            data = await self._read_release(url, rls_id)
+        except ScrapeError as e:
+            raise scrape_error_with_context(self, url, e) from e
+        return self._settle_release(data, url, rls_id)
+
+    async def _read_release(self, url, rls_id=None):
+        """The store's page or answer for `url`, parsed into the release's dictionary."""
         if self.is_json_api:
             soup = await self.fetch_data(url, rls_id=rls_id)
         else:
@@ -67,7 +112,10 @@ class MetadataMixin(ABC):
             "source": None,
             "url": url,
         }
+        return data
 
+    def _settle_release(self, data: dict[str, Any], url, rls_id) -> dict[str, Any]:
+        """The parsed release with its URLs, artists, tracks, type and label settled."""
         if rls_id:
             data["url"] = self.format_url(rls_id=rls_id, rls_name=data["title"])
         data["urls"] = [data["url"]]
@@ -179,8 +227,8 @@ class MetadataMixin(ABC):
         # --- Title-based overrides ---
         if re.search(r"\bE\.?P\.?\b", title, re.IGNORECASE):
             return strip_ep_suffix(title), "EP"
-        if re.search(r"-? *Single$", title, re.IGNORECASE):
-            return re.sub(r"-? *Single$", "", title, flags=re.IGNORECASE).strip(), "Single"
+        if (marked := split_type_marker(title, bare=False)).rls_type == "Single":
+            return marked.title.strip(), "Single"
         elif re.search(r"original.*soundtrack", data["title"], flags=re.IGNORECASE):
             return data["title"], "Soundtrack"
 
@@ -332,18 +380,9 @@ def folded_title(track) -> str | None:
     return f"{title} ({version})" if title and version else title
 
 
-# What a store appends to a title to say the release is an EP: "Title - EP" (any dash, with a space before it, so
-# "MAX-EP" stays a name), "Title (EP)", "Title [EP]".
-RE_EP_STORE_SUFFIX = re.compile(
-    r"(?:\s+[-‐-―]\s*E\.?P\.?|\s*\(\s*E\.?P\.?\s*\)|\s*\[\s*E\.?P\.?\s*\])\s*$", re.IGNORECASE
-)
-# "EP" ending the title itself: "Title EP".
-RE_EP_TITLE_SUFFIX = re.compile(r"\s+E\.?P\.?\s*$", re.IGNORECASE)
-
-
 def ends_with_ep(title):
     """Whether an EP marker ends the title, a store's or a bare "EP", whatever strip_ep_from_title says."""
-    return bool(RE_EP_STORE_SUFFIX.search(title) or RE_EP_TITLE_SUFFIX.search(title))
+    return split_type_marker(title).rls_type == "EP"
 
 
 def strip_ep_suffix(title):
@@ -354,10 +393,8 @@ def strip_ep_suffix(title):
     title ("Title EP") goes only with strip_ep_from_title, as it is often part of the
     release's name. An "EP" inside the title ("The EP Sessions") is part of it and stays.
     """
-    stripped = RE_EP_STORE_SUFFIX.sub("", title)
-    if stripped == title and cfg.upload.formatting.strip_ep_from_title:
-        stripped = RE_EP_TITLE_SUFFIX.sub("", title)
-    return stripped.strip() or title
+    marked = split_type_marker(title, bare=cfg.upload.formatting.strip_ep_from_title)
+    return (marked.title if marked.rls_type == "EP" else title).strip() or title
 
 
 def label_names_a_main_artist(label: str, artists) -> bool:
@@ -481,7 +518,8 @@ def construct_replacement_list(artists: list[tuple[str, str]]) -> list[tuple[lis
         # normalize_accents returns str when given single argument
         normalized = str(normalized_result).lower() if normalized_result else ""
         if normalized:
-            unsorted_pool.append([normalized, artist_name])
+            # The whole name also as the decision keys it, so "Simon and Garfunkel" is "Simon" and "Garfunkel" too.
+            unsorted_pool.append([normalized, artist_name, same_artist_key(artist_name)])
     artist_pool: list[list[str]] = sorted(unsorted_pool, key=lambda x: len(x[0]))
     for i, pri_a_raw in enumerate(artist_pool):
         for other_a in reversed(artist_pool[0:i]):
@@ -489,7 +527,7 @@ def construct_replacement_list(artists: list[tuple[str, str]]) -> list[tuple[lis
             # Either part may come first: "Simon" and "Garfunkel", or "Leslie Odom" and "Jr.".
             joined = {other_a[0] + pri_a_raw[0], pri_a_raw[0] + other_a[0]}
             for artist_to_compare in artist_pool[i:]:
-                if artist_to_compare[0] in joined:
+                if artist_to_compare[0] in joined or artist_to_compare[2] in joined:
                     to_replace.append((current_replacements, artist_to_compare[1]))
     return to_replace
 

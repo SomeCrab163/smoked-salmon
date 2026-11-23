@@ -1,7 +1,7 @@
 album = "Santana, Supernatural"
 why = "A band album full of one-track featured singers: Deezer and MusicBrainz agree track by track; Discogs adds band members as guests and a 'No Artist' main."
 edition = "Columbia/Legacy remaster, 14 tracks (Deezer 7040992 = MusicBrainz b43f421d by barcode); Discogs 807636 is master 77696's main release (1999 Arista CD); the Legacy Edition (Deezer 8248624, 24 tracks) left out"
-known_wrong = []
+known_wrong = ["merge: on 6 Lauryn Hill and Cee-Lo main, as the files' plain ARTIST has them, beside the guests 'Ms. Lauryn Hill' and 'CeeLo Green': the files win over the stores' guests on the same names, and the other spellings are not read as one"]
 files_from = "deezer"
 
 [sources]
@@ -17,7 +17,7 @@ open = "name forms: Cee-Lo / CeeLo Green, Lauryn Hill / Ms. Lauryn Hill, Mana / 
 how_we_know = "every store names Santana as the main artist"
 
 [today.deezer]
-release = ["Santana (main)", "Dave Matthews (guest)", "Carter Beauford (guest)", "Everlast (guest)", "Rob Thomas (guest)", "Lauryn Hill (guest)", "Cee-Lo (guest)", "Ms. Lauryn Hill (guest)", "The Product G&B (guest)", "Mana (guest)", "Eagle-Eye Cherry (guest)", "Eric Clapton (guest)"]
+release = ["Santana (main)", "Dave Matthews (guest)", "Carter Beauford (guest)", "Everlast (guest)", "Rob Thomas (guest)", "Ms. Lauryn Hill (guest)", "Cee-Lo (guest)", "Lauryn Hill (guest)", "The Product G&B (guest)", "Mana (guest)", "Eagle-Eye Cherry (guest)", "Eric Clapton (guest)"]
 tracks = 14
 
 [today.musicbrainz]
@@ -33,9 +33,9 @@ release = ["Santana (main)", "Dave Matthews (guest)", "Carter Beauford (guest)",
 tracks = 14
 
 [today.merge]
-release = ["Santana (main)", "Dave Matthews (main)", "Carter Beauford (main)", "Everlast (main)", "Rob Thomas (main)", "Ms. Lauryn Hill (guest)", "CeeLo Green (guest)", "The Product G&B (main)", "Maná (main)", "Eagle-Eye Cherry (main)", "Eric Clapton (main)"]
+release = ["Santana (main)", "Dave Matthews (main)", "Carter Beauford (main)", "Everlast (main)", "Rob Thomas (main)", "Lauryn Hill (main)", "Cee-Lo (main)", "Ms. Lauryn Hill (guest)", "CeeLo Green (guest)", "The Product G&B (main)", "Maná (main)", "Eagle-Eye Cherry (main)", "Eric Clapton (main)"]
 tracks = 14
-credits = ["1.1: Santana (main)", "1.2: Santana (main), Dave Matthews (main), Carter Beauford (main)", "1.3: Santana (main), Everlast (main)", "1.4: Santana (main)", "1.5: Santana (main), Rob Thomas (main)", "1.6: Santana (main), Ms. Lauryn Hill (guest), CeeLo Green (guest)", "1.7: Santana (main), The Product G&B (main)", "1.8: Santana (main)", "1.9: Santana (main), Maná (main)", "1.10: Santana (main), Eagle-Eye Cherry (main)", "1.11: Santana (main)", "1.12: Santana (main)", "1.13: Santana (main), Eric Clapton (main)", "1.14: Santana (main)"]
+credits = ["1.1: Santana (main)", "1.2: Santana (main), Dave Matthews (main), Carter Beauford (main)", "1.3: Santana (main), Everlast (main)", "1.4: Santana (main)", "1.5: Santana (main), Rob Thomas (main)", "1.6: Santana (main), Lauryn Hill (main), Cee-Lo (main), Ms. Lauryn Hill (guest), CeeLo Green (guest)", "1.7: Santana (main), The Product G&B (main)", "1.8: Santana (main)", "1.9: Santana (main), Maná (main)", "1.10: Santana (main), Eagle-Eye Cherry (main)", "1.11: Santana (main)", "1.12: Santana (main)", "1.13: Santana (main), Eric Clapton (main)", "1.14: Santana (main)"]
 
 # The files' tags.
 # Constructed from Deezer data, not copied from anyone's files: the case's own
@@ -181,6 +181,167 @@ artist = ["Santana"]
 album = ["Supernatural (Remastered)"]
 albumartist = ["Santana"]
 date = ["1999-06-15"]
+
+# The files' tags as Picard writes them: a CD rip tagged from MusicBrainz.
+# Constructed from the case's MusicBrainz recording, not copied from anyone's
+# files. Shape: Picard 3.0.5's default settings (standardize artist names:
+# variations only; release relationships on, track relationships off; no
+# translation): ARTIST and ALBUMARTIST each one joined credit, ARTISTS each
+# name. Only the tags salmon reads.
+
+[[picard_track]]
+file = "01.flac"
+tracknumber = ["1"]
+discnumber = ["1"]
+title = ["(Da Le) Yaleo"]
+artist = ["Santana"]
+artists = ["Santana"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
+
+[[picard_track]]
+file = "02.flac"
+tracknumber = ["2"]
+discnumber = ["1"]
+title = ["Love of My Life"]
+artist = ["Santana feat. Dave Matthews & Carter Beauford"]
+artists = ["Santana", "Dave Matthews", "Carter Beauford"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
+
+[[picard_track]]
+file = "03.flac"
+tracknumber = ["3"]
+discnumber = ["1"]
+title = ["Put Your Lights On"]
+artist = ["Santana feat. Everlast"]
+artists = ["Santana", "Everlast"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
+
+[[picard_track]]
+file = "04.flac"
+tracknumber = ["4"]
+discnumber = ["1"]
+title = ["Africa Bamba"]
+artist = ["Santana"]
+artists = ["Santana"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
+
+[[picard_track]]
+file = "05.flac"
+tracknumber = ["5"]
+discnumber = ["1"]
+title = ["Smooth"]
+artist = ["Santana feat. Rob Thomas"]
+artists = ["Santana", "Rob Thomas"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
+
+[[picard_track]]
+file = "06.flac"
+tracknumber = ["6"]
+discnumber = ["1"]
+title = ["Do You Like the Way"]
+artist = ["Santana feat. Ms. Lauryn Hill & CeeLo Green"]
+artists = ["Santana", "Ms. Lauryn Hill", "CeeLo Green"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
+
+[[picard_track]]
+file = "07.flac"
+tracknumber = ["7"]
+discnumber = ["1"]
+title = ["Maria Maria (radio mix)"]
+artist = ["Santana feat. The Product G&B"]
+artists = ["Santana", "The Product G&B"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
+
+[[picard_track]]
+file = "08.flac"
+tracknumber = ["8"]
+discnumber = ["1"]
+title = ["Migra"]
+artist = ["Santana"]
+artists = ["Santana"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
+
+[[picard_track]]
+file = "09.flac"
+tracknumber = ["9"]
+discnumber = ["1"]
+title = ["Corazón espinado"]
+artist = ["Santana feat. Maná"]
+artists = ["Santana", "Maná"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
+
+[[picard_track]]
+file = "10.flac"
+tracknumber = ["10"]
+discnumber = ["1"]
+title = ["Wishing It Was"]
+artist = ["Santana feat. Eagle‐Eye Cherry"]
+artists = ["Santana", "Eagle‐Eye Cherry"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
+
+[[picard_track]]
+file = "11.flac"
+tracknumber = ["11"]
+discnumber = ["1"]
+title = ["El farol"]
+artist = ["Santana"]
+artists = ["Santana"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
+
+[[picard_track]]
+file = "12.flac"
+tracknumber = ["12"]
+discnumber = ["1"]
+title = ["Primavera"]
+artist = ["Santana"]
+artists = ["Santana"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
+
+[[picard_track]]
+file = "13.flac"
+tracknumber = ["13"]
+discnumber = ["1"]
+title = ["The Calling"]
+artist = ["Santana feat. Eric Clapton"]
+artists = ["Santana", "Eric Clapton"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
+
+[[picard_track]]
+file = "14.flac"
+tracknumber = ["14"]
+discnumber = ["1"]
+title = ["Day of Celebration"]
+artist = ["Santana"]
+artists = ["Santana"]
+album = ["Supernatural"]
+albumartist = ["Santana"]
+date = ["2010-02-16"]
 
 # What each store sent, trimmed as [sources] says.
 [stores]

@@ -1,6 +1,7 @@
 import html
 import re
 import unicodedata
+from typing import NamedTuple
 
 from unidecode import unidecode
 
@@ -12,10 +13,13 @@ from salmon.errors import GenreNotInWhitelist
 
 _RE_NUMBERED_SUFFIX = re.compile(r" \(\d+\)$")
 _RE_NUMBERED_SUFFIXES = re.compile(r" \(\d+\)(?= |$)")
-# A store's release type ending an album title, left out of a search: "Title EP", "Title - EP", "Title - Single".
-# Only at the end, as a whole word after a space, so "The Singles" and "Forever Single Mothers" keep theirs, and an
-# album called "EP" or "Single" keeps its title.
-_RE_TYPE_SUFFIX = re.compile(r"\s+(?:-\s*)?(?:EP|Single)\s*$")
+# A release type ending a title: "EP", "E.P." or "Single" in any case, a whole word after a space, so "The Singles"
+# and "Forever Single Mothers" keep theirs. Set apart, after a dash with a space before it (any dash, so "MAX-EP" stays
+# a name) or in brackets, or bare: "Title - EP", "Title (Single)", "Title [EP]", "Title EP".
+_RE_TYPE_MARKER = re.compile(
+    r"(?:\s+(?P<dash>[-\u2010-\u2015])\s*|\s*(?P<bracket>[(\[])\s*|\s+)(?P<type>E\.?P\.?|Single)(?(bracket)\s*[)\]])\s*$",
+    re.IGNORECASE,
+)
 # A credit in a title, in any case: "feat", "Feat.", "featuring" or "ft." as a whole word, or a bracket opening with
 # "with" or "vs." ("Song (with B)"), with the names it holds.
 _RE_CREDIT_WORD = re.compile(r"\b(?:feat|featuring|ft)\b", flags=re.IGNORECASE)
@@ -46,6 +50,33 @@ def comparable(text: object) -> str:
     # Trackers send HTML-escaped text ("Collector&#39;s"): unescaped first, or the entity's letters would count.
     plain = unicodedata.normalize("NFKD", html.unescape("" if text is None else str(text))).casefold()
     return "".join(char for char in plain if char.isalnum())
+
+
+# What same_artist_key drops before `comparable`, one fold per row, each with the case that asked for it (#1131). A new
+# spelling of one artist is a row here and a pair in tests/fixtures/name_pairs.toml. The rows run in order, on the name
+# as `comparable` reads it (unescaped, accents dropped), between spaces or any dash.
+_SEPARATOR = r"[\s\-\u2010-\u2015\u2212]+"
+_ARTIST_FOLDS = (
+    # The word "and" between two names, as "&" is dropped: "Dick Dale & His Del-Tones" (Pulp Fiction).
+    (re.compile(rf"(?<=\S){_SEPARATOR}and{_SEPARATOR}(?=\S)", flags=re.IGNORECASE), " "),
+    # A leading "The": "The Ahmad Jamal Trio" (MusicBrainz), "The-Dream".
+    (re.compile(rf"^\W*the{_SEPARATOR}", flags=re.IGNORECASE), ""),
+)
+
+
+def same_artist_key(name: str) -> str:
+    """The key two names share when they are one artist across a release: `comparable` after _ARTIST_FOLDS; when the
+    folds leave no letters or digits, `comparable` alone ("The "), and the name itself when it has none ("!!!" is not
+    "???")."""
+    # An invisible character between two words ("The\u200bDream") parts them, as a space would.
+    folded = "".join(
+        " " if unicodedata.category(char) == "Cf" else char
+        for char in unicodedata.normalize("NFKD", html.unescape(name))
+        if not unicodedata.combining(char)
+    )
+    for pattern, replacement in _ARTIST_FOLDS:
+        folded = pattern.sub(replacement, folded)
+    return comparable(folded) or comparable(name) or name.strip()
 
 
 _REPLACED_CATEGORIES = frozenset({"Zs", "Zl", "Zp"})
@@ -217,6 +248,38 @@ def artists_or_various(names) -> str:
     return cfg.upload.formatting.various_artist_word if reaches_various_threshold(names) else join_artists(names)
 
 
+class TypeMarker(NamedTuple):
+    """A title without the release type ending it, that type ("EP", "Single", or None for none), and why."""
+
+    title: str
+    rls_type: str | None = None
+    reason: str = "no type ends it"
+
+
+def split_type_marker(title: object, bare: bool = True) -> TypeMarker:
+    """Whether a release type ends the title, the one answer to it that every search and store reads (#969), with the
+    reason.
+
+    Set apart by a dash or brackets, it is always the type. Bare ("Title EP", "Forever Single") it may be a word of the
+    name: bare=False keeps it. A title that is only the type ("EP", "(Single)") is a name and has none.
+    """
+    text = "" if title is None else str(title)
+    match = _RE_TYPE_MARKER.search(text)
+    if not match:
+        return TypeMarker(text)
+    if not text[: match.start()].strip():
+        return TypeMarker(text, reason="the whole title, so a name")
+    if match["dash"]:
+        reason = "set apart by a dash"
+    elif match["bracket"]:
+        reason = "in brackets"
+    elif bare:
+        reason = "bare, read as the type"
+    else:
+        return TypeMarker(text, reason="bare, kept as a word of the name")
+    return TypeMarker(text[: match.start()], "Single" if match["type"].lower() == "single" else "EP", reason)
+
+
 def make_searchstrs(artists, album, normalize=False) -> list[str]:
     """Generate search strings from artists and album name.
 
@@ -230,7 +293,8 @@ def make_searchstrs(artists, album, normalize=False) -> list[str]:
     """
     main_artists = [a for a, i in artists if i == "main"]
     album = album or ""
-    album = _RE_TYPE_SUFFIX.sub("", album)
+    # A bare type goes too: a wider search costs noise, a narrower one can miss a group.
+    album = split_type_marker(album).title
     album = re.sub(r"\(?[Ff]eat(\.|uring)? [^\)]+\)?", "", album)
 
     search: str | list[str]
