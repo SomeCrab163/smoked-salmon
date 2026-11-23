@@ -175,7 +175,7 @@ def _run_downconversions() -> None:
         conversion_upload.execute_downconversion_tasks,
         tasks,
         "/release",
-        cast("BaseGazelleApi", cast("object", SimpleNamespace(site_string="RED"))),
+        cast("BaseGazelleApi", cast("object", SimpleNamespace(site_string="RED", site_code="RED"))),
         5,
         _metadata(),
         None,

@@ -26,7 +26,7 @@ def _expand_folder(path: str) -> str:
     return os.path.expanduser(path)
 
 
-def _holds(folder: str, path: str) -> bool:
+def holds(folder: str, path: str) -> bool:
     """Whether path is folder or inside it, resolved or as given (commonpath: /music-old is not in /music)."""
     # As given too: an album symlinked into a library is in it, wherever the link points.
     for norm in (_real, _lexical):
@@ -102,16 +102,16 @@ class Directory(BaseStruct):
                 ("cross_upload_dottorrents_dir", self.cross_upload_dottorrents_dir),
                 ("tmp_dir", self.tmp_dir),
             ):
-                if folder and _holds(entry, folder):
+                if folder and holds(entry, folder):
                     raise ValueError(f"library_dirs entry {entry} must not contain {name} ({folder})")
             # salmon replaces and deletes folders in these: renamed copies, conversions, spectrals, clean_tmp_dir.
             for name, folder in (("download_directory", self.download_directory), ("tmp_dir", self.tmp_dir)):
-                if folder and _holds(folder, entry):
+                if folder and holds(folder, entry):
                     raise ValueError(f"library_dirs entry {entry} must not be inside {name} ({folder})")
 
     def library_of(self, path: str) -> str | None:
         """The library_dirs entry path is or is inside, compared resolved and as given, or None."""
-        return next((entry for entry in self.library_dirs if _holds(entry, path)), None)
+        return next((entry for entry in self.library_dirs if holds(entry, path)), None)
 
     def is_library_path(self, path: str) -> bool:
         """Whether path is a library_dirs entry or inside one, compared resolved and as given."""
@@ -119,7 +119,7 @@ class Directory(BaseStruct):
 
     def library_inside(self, path: str) -> str | None:
         """A library_dirs entry that path is or holds, or None."""
-        return next((entry for entry in self.library_dirs if _holds(path, entry)), None)
+        return next((entry for entry in self.library_dirs if holds(path, entry)), None)
 
     def protects(self, path: str) -> bool:
         """Whether changing or deleting path could change a library album: it is in a library or holds one."""
@@ -267,8 +267,11 @@ class GazelleTrackerSettings(BaseStruct):
     dottorrents_dir: str | None = None
     # Where salmon cross-upload writes this tracker's .torrent files. Unset: see Cfg.cross_upload_dottorrents_dir.
     cross_upload_dottorrents_dir: str | None = None
+    # Where this tracker's music data goes. Unset: directory.download_directory.
+    download_directory: str | None = None
 
     def __post_init__(self):
+        self.download_directory = _expand_folder(self.download_directory) if self.download_directory else None
         if self.dottorrents_dir:
             self.dottorrents_dir = _expand_folder(self.dottorrents_dir)
         if self.cross_upload_dottorrents_dir:
@@ -305,7 +308,7 @@ class Seedbox(BaseStruct):
     enabled: bool = True  # false skips this seedbox
     url: str = ""  # Name of remote in rclone
     type: Literal["local", "rclone"] = "local"
-    directory: str = ""  # Directory when adding torrent to download client
+    directory: str = ""  # Directory when adding torrent to download client. Empty on a local one: the tracker's folder
     # Trackers this seedbox serves; empty means every tracker, so existing configs are unchanged.
     trackers: list[str] = msgspec.field(default_factory=list)
     flac_only: bool = False  # if true, only upload FLAC files
@@ -315,7 +318,7 @@ class Seedbox(BaseStruct):
     # The label for torrents salmon cross-upload queues here. Unset: label.
     cross_upload_label: str | None = None
     add_paused: bool = False  # If true, add torrents to client in paused state
-    # rclone only: salmon up removes the folder from download_directory once every seedbox has it and seeds it.
+    # rclone only: salmon up removes the folder from its download_directory once every seedbox has it and seeds it.
     remove_local_after_copy: bool = False
 
     def __post_init__(self):
@@ -638,6 +641,50 @@ class Cfg(BaseStruct):
                     raise ValueError(f"tracker.{code}.{key} is not a valid directory")
                 if folder and (library := self.directory.library_of(folder)) is not None:
                     raise ValueError(f"library_dirs entry {library} must not contain tracker.{code}.{key} ({folder})")
+        self._check_tracker_directories()
+        self._check_local_seedboxes()
+
+    def _check_tracker_directories(self) -> None:
+        # salmon makes, replaces and deletes album folders in these. Never compared with the global one or with
+        # another tracker's: /downloads holding /downloads/red is valid.
+        for code in _TRACKER_CODES:
+            settings: GazelleTrackerSettings | None = getattr(self.tracker, code)
+            if settings is None or not (folder := settings.download_directory):
+                continue
+            name = f"tracker.{code}.download_directory"
+            # It need not exist: it is created on first write.
+            if os.path.exists(folder) and not os.path.isdir(folder):
+                raise ValueError(f"{name} is not a valid directory")
+            if (library := self.directory.library_of(folder)) is not None:
+                raise ValueError(f"library_dirs entry {library} must not contain {name} ({folder})")
+            if (library := self.directory.library_inside(folder)) is not None:
+                raise ValueError(f"library_dirs entry {library} must not be inside {name} ({folder})")
+            tmp_dir = self.directory.tmp_dir
+            if tmp_dir and self.directory.clean_tmp_dir and holds(tmp_dir, folder):
+                raise ValueError(
+                    f"{name} ({folder}) must not be inside tmp_dir ({tmp_dir}) with clean_tmp_dir on: salmon would "
+                    "delete its music when it starts"
+                )
+
+    def _check_local_seedboxes(self) -> None:
+        """Refuse a local seedbox whose one directory would be the save path of trackers with different folders."""
+        configured = [code.upper() for code in _TRACKER_CODES if getattr(self.tracker, code) is not None]
+        for position, seedbox in enumerate(self.seedbox, 1):
+            if not (seedbox.enabled and seedbox.type == "local" and seedbox.directory):
+                continue
+            served = [code for code in configured if not seedbox.trackers or code in seedbox.trackers]
+            folders = [self.download_directory_for(code) for code in served]
+            # seedbox.directory itself is not compared: in Docker it is the client's view of the path.
+            if all(holds(folders[0], folder) and holds(folder, folders[0]) for folder in folders):
+                continue
+            # By name or position: never by its URLs, which hold passwords.
+            box = f"seedbox '{seedbox.name}'" if seedbox.name else f"seedbox number {position}"
+            raise ValueError(
+                f"{box} has one directory for trackers whose download_directory differs: "
+                f"{', '.join(f'{code} ({folder})' for code, folder in zip(served, folders, strict=True))}. "
+                "Remove its directory, so that each torrent is saved in its tracker's folder, or use one seedbox per "
+                "tracker, with trackers set."
+            )
 
     def cross_upload_dottorrents_dir(self, code: str) -> str | None:
         """The folder salmon cross-upload writes tracker `code`'s .torrent files to, or None when none is set for it.
@@ -649,3 +696,25 @@ class Cfg(BaseStruct):
         return (
             settings.cross_upload_dottorrents_dir if settings else None
         ) or self.directory.cross_upload_dottorrents_dir
+
+    def download_directory_for(self, code: str | None) -> str:
+        """Where tracker `code`'s music data goes: its download_directory, else the global one."""
+        settings: GazelleTrackerSettings | None = getattr(self.tracker, code.lower(), None) if code else None
+        return (settings.download_directory if settings else None) or self.directory.download_directory
+
+    def per_tracker_directories(self) -> bool:
+        """Whether any tracker has a download_directory of its own. Without one, nothing about them applies."""
+        return bool(self.tracker_directories())
+
+    def tracker_directories(self) -> list[str]:
+        """Each tracker's own download_directory that is set, whether or not it exists yet."""
+        configured: list[GazelleTrackerSettings | None] = [getattr(self.tracker, code) for code in _TRACKER_CODES]
+        return [settings.download_directory for settings in configured if settings and settings.download_directory]
+
+    def data_directories(self) -> list[str]:
+        """The folders salmon puts music data in: the global download_directory, then the trackers'."""
+        return [self.directory.download_directory, *self.tracker_directories()]
+
+    def data_directory_inside(self, path: str) -> str | None:
+        """One of data_directories that path is or holds, or None."""
+        return next((folder for folder in self.data_directories() if holds(path, folder)), None)

@@ -6,10 +6,12 @@ import sys
 from collections.abc import Callable, Iterator
 from copy import copy
 from string import Formatter
+from typing import NoReturn
 
+import anyio.lowlevel
 import asyncclick as click
 
-from salmon import cfg, dryrun, interaction
+from salmon import cfg, dryrun, interaction, placement
 from salmon.common import clean_name, has_visible_chars
 from salmon.common.constants import AUDIO_EXTENSIONS
 from salmon.common.files import shares_files
@@ -18,6 +20,7 @@ from salmon.constants import (
     BLACKLISTED_CHARS,
 )
 from salmon.errors import UploadError
+from salmon.placement import SHARED_NOTE, PlacementDeclined, Replacing
 from salmon.tagger.audio_info import gather_audio_info
 
 
@@ -30,10 +33,18 @@ async def rename_folder(path, metadata, auto_rename, check=True, parent=None, or
     For scene releases, the name of the original folder is kept untouched, and
     the folder is copied to the download folder.
     `parent` replaces the download folder as the directory the renamed folder goes into.
-    `original` is the folder the user gave, passed only when `path` is a copy of it: the copy is left for its run
-    directory to remove. The source folder is never removed here: see remove_source_folder.
+    `original` is the folder the user gave, passed only when the run works on a copy of it, on every pass: it is never
+    replaced. The copy is left for its run directory to remove. The source folder is never removed here: see
+    remove_source_folder.
     `source` is the folder the run started from: once an earlier rename has left it, a name that leads back to it is
     refused, since replacing it would delete the user's album.
+    With a tracker download_directory set, no rename, salmon tag's included, replaces a data directory or a folder
+    holding one. A rename into one of those directories (`parent`, as salmon up passes it, outside a dry run) is then
+    a placement (see salmon.placement): linked or copied whole, and a folder there is replaced only once that is made.
+
+    Raises:
+        click.Abort: A placement was declined: the first tracker's folder is the one every other is made from, so
+            the run has nothing to go on with.
     """
     # Imported here: the uploader package imports this module.
     from salmon.uploader.spectrals import get_spectrals_path, made_by_salmon
@@ -64,46 +75,14 @@ async def rename_folder(path, metadata, auto_rename, check=True, parent=None, or
         raise UploadError(f"Invalid folder name: {new_base!r}")
 
     new_path = os.path.join(parent or cfg.directory.download_directory, new_base)
+    placing = _is_placement(parent)
     same_location = os.path.isdir(new_path) and os.path.samefile(path, new_path)
     # Checked whether or not new_path exists yet: a symlinked folder on the way can lead into a library.
-    if not same_location and cfg.directory.protects(new_path):
-        raise UploadError(f"Not renaming into {new_path}: it is in library_dirs, or holds one.")
+    if not same_location and (refusal := _rename_refusal(new_path)) is not None:
+        raise UploadError(refusal)
+    replacing = None
     if os.path.isdir(new_path) and not same_location:
-        if (refusal := _replace_refusal(new_path, original, source)) is not None:
-            raise UploadError(refusal)
-        # An earlier run's renamed folder shares its files through hardlinks, and a torrent may seed from it.
-        shared = shares_files(new_path)
-        note = " (it shares files with another folder through a hardlink or symlink: a torrent may seed from it)"
-        if not check or await interaction.confirm(
-            click.style(
-                f"A folder already exists with the new folder name '{new_path}'{note if shared else ''}, "
-                "would you like to replace it?",
-                fg="magenta",
-                bold=True,
-            ),
-            # It may be an earlier upload a torrent seeds from, or another album of that name: kept unless told.
-            default=False,
-        ):
-            # Checked again: another job can change the folder while the question waits.
-            if (refusal := _replace_refusal(new_path, original, source)) is not None:
-                raise UploadError(refusal)
-            if os.path.lexists(new_path):
-                if not shared and shares_files(new_path):
-                    raise UploadError(
-                        f"Not replacing {new_path}: it started sharing files with another folder while you answered."
-                    )
-                shutil.rmtree(new_path)
-        else:
-            raise UploadError("New folder name already exists.")
-    new_path_dirname = os.path.dirname(new_path)
-    if not os.path.exists(new_path_dirname):
-        os.makedirs(new_path_dirname)
-
-    # Check if hardlinks can be used
-    same_volume = os.stat(path).st_dev == os.stat(cfg.directory.download_directory).st_dev
-    # A hardlink shares the inode, so a later tag write on the new folder would reach a library album.
-    in_library = cfg.directory.protects(path)
-    use_hardlinks = same_volume and cfg.directory.hardlinks and not in_library
+        replacing = await _confirm_replacing(path, new_path, original, source, check=check, placing=placing)
 
     # The spectrals salmon made before this rename are looked up by the new name afterwards: they move with the album,
     # wherever they are and whatever remove_source_dir says. A Spectrals folder salmon did not make is the album's own,
@@ -116,41 +95,161 @@ async def rename_folder(path, metadata, auto_rename, check=True, parent=None, or
     same_folder = os.path.exists(path) and os.path.exists(new_path) and os.path.samefile(path, new_path)
     if same_folder:
         click.secho(f"Skipping copy, same location already for '{new_path}'", fg="yellow")
+    elif placing:
+        await _place_renamed(path, new_path, original, source, ignore=ignore, replacing=replacing)
     else:
-        if use_hardlinks:
-            try:
-                shutil.copytree(path, new_path, copy_function=os.link, dirs_exist_ok=True, ignore=ignore)
-                click.secho(f"Hardlinked folder to '{new_path}'.", fg="yellow")
-            except shutil.Error as _:
-                click.secho("Hardlinking didn't work, falling back to non-hardlink copy...", fg="red")
-                # A partially hardlinked tree makes the plain copy raise SameFileError (#356)
-                shutil.rmtree(new_path, ignore_errors=True)
-                shutil.copytree(path, new_path, dirs_exist_ok=True, ignore=ignore)
-                click.secho(f"Copied folder to '{new_path}'.", fg="yellow")
-        else:
-            shutil.copytree(path, new_path, dirs_exist_ok=True, ignore=ignore)
-            click.secho(f"Copied folder to '{new_path}'.", fg="yellow")
+        _copy_folder(path, new_path, ignore)
 
     if carry_specs:
         # Moved, not copied: the source must not keep a spectrals folder the upload never deletes. Also into the same
         # folder: a case-only rename still renames salmon's folder outside it.
         _move_specs_folder(specs_path, get_spectrals_path(new_path))
 
-    # Local: the converter package imports this module.
-    from salmon.converter.conversions import carry_conversion
+    # A placement has given the new folder its record already, or been undone.
+    if same_folder or not placing:
+        # Local: the converter package imports this module.
+        from salmon.converter.conversions import carry_conversion
 
-    carry_conversion(path, new_path)
+        carry_conversion(path, new_path)
+    else:
+        await anyio.lowlevel.checkpoint()  # After the spectrals: a run cancelled meanwhile stops, the album whole
     return new_path
+
+
+def _is_placement(parent: str | None) -> bool:
+    """Whether a rename into parent follows the placement rules. salmon tag passes no parent: never."""
+    return (
+        parent is not None
+        and cfg.per_tracker_directories()
+        and not dryrun.active()
+        and parent in cfg.data_directories()
+    )
+
+
+async def _confirm_replacing(
+    path: str, new_path: str, original: str | None, source: str | None, *, check: bool, placing: bool
+) -> Replacing | None:
+    """Ask whether the rename may replace the folder at new_path. A placement replaces it later, once the new one is
+    built, so declining the copy doesn't cost it; another rename removes it now.
+
+    Returns:
+        For a placement, the folder the user agreed to replace, as it was before the question.
+
+    Raises:
+        UploadError: It must not be replaced, or the user kept it.
+        click.Abort: A placement that must not replace it (another salmon web job's included), or under -yyy.
+    """
+    if (refusal := _replace_refusal(new_path, original, source)) is not None:
+        raise UploadError(refusal)
+    replacing = None
+    if placing:
+        _abort_unless_placeable(path, new_path, original, source)
+        try:
+            await placement.claim(new_path)  # Before the question, as for a later tracker's folder
+        except PlacementDeclined as declined:
+            _abort(str(declined))
+        # confirm doesn't answer by itself: it would wait at the terminal.
+        if await interaction.assume_defaults():
+            _abort(f"Not replacing {new_path} with -yyy (upload.yes_all): it exists already.")
+        try:
+            replacing = Replacing.of(new_path)
+        except OSError as error:  # Another salmon web job can remove it while the claim waits
+            _abort(f"Not renaming into {new_path}: {error}.")
+    # An earlier run's renamed folder shares its files through hardlinks, and a torrent may seed from it.
+    shared = replacing.shared if replacing else shares_files(new_path)
+    if check and not await interaction.confirm(
+        click.style(
+            f"A folder already exists with the new folder name '{new_path}'{SHARED_NOTE if shared else ''}, "
+            "would you like to replace it?",
+            fg="magenta",
+            bold=True,
+        ),
+        # It may be an earlier upload a torrent seeds from, or another album of that name: kept unless told.
+        default=False,
+    ):
+        raise UploadError("New folder name already exists.")
+    # Checked again: another job can change the folder while the question waits.
+    if (refusal := _replace_refusal(new_path, original, source)) is not None:
+        raise UploadError(refusal)
+    if replacing is None and os.path.lexists(new_path):
+        if not shared and shares_files(new_path):
+            raise UploadError(
+                f"Not replacing {new_path}: it started sharing files with another folder while you answered."
+            )
+        shutil.rmtree(new_path)
+    return replacing
+
+
+def _abort(reason: str) -> NoReturn:
+    click.secho(reason, fg="red", bold=True)
+    raise click.Abort
+
+
+def _abort_unless_placeable(path: str, new_path: str, original: str | None, source: str | None) -> None:
+    kept = [folder for folder in (path, original, source) if folder]
+    if (reason := placement.never_replaced(new_path) or placement.overlap(new_path, *kept)) is not None:
+        _abort(f"Not renaming into {new_path}: {reason}.")
+
+
+async def _place_renamed(
+    path: str,
+    new_path: str,
+    original: str | None,
+    source: str | None,
+    *,
+    ignore: placement.Ignore | None,
+    replacing: Replacing | None,
+) -> None:
+    _abort_unless_placeable(path, new_path, original, source)
+    try:
+        await placement.place_folder(path, new_path, ignore=ignore, replacing=replacing)
+    except PlacementDeclined as declined:
+        _abort(str(declined))
+
+
+def _copy_folder(path: str, new_path: str, ignore: placement.Ignore | None) -> None:
+    """Link or copy path to new_path, for a rename that is no placement: where a link fails, it copies."""
+    new_path_dirname = os.path.dirname(new_path)
+    if not os.path.exists(new_path_dirname):
+        os.makedirs(new_path_dirname)
+
+    # Check if hardlinks can be used
+    same_volume = os.stat(path).st_dev == os.stat(new_path_dirname or os.curdir).st_dev
+    # A hardlink shares the inode, so a later tag write on the new folder would reach a library album.
+    in_library = cfg.directory.protects(path)
+    if same_volume and cfg.directory.hardlinks and not in_library:
+        try:
+            shutil.copytree(path, new_path, copy_function=os.link, dirs_exist_ok=True, ignore=ignore)
+            click.secho(f"Hardlinked folder to '{new_path}'.", fg="yellow")
+        except shutil.Error as _:
+            click.secho("Hardlinking didn't work, falling back to non-hardlink copy...", fg="red")
+            # A partially hardlinked tree makes the plain copy raise SameFileError (#356)
+            shutil.rmtree(new_path, ignore_errors=True)
+            shutil.copytree(path, new_path, dirs_exist_ok=True, ignore=ignore)
+            click.secho(f"Copied folder to '{new_path}'.", fg="yellow")
+    else:
+        shutil.copytree(path, new_path, dirs_exist_ok=True, ignore=ignore)
+        click.secho(f"Copied folder to '{new_path}'.", fg="yellow")
+
+
+def _rename_refusal(new_path: str) -> str | None:
+    """Why no rename may go to new_path, whether or not it exists yet, or None."""
+    if cfg.directory.protects(new_path):
+        return f"Not renaming into {new_path}: it is in library_dirs, or holds one."
+    # With /downloads/red a tracker's, an album named "red" renamed into /downloads would replace all that seeds there.
+    if (reason := placement.data_directory_refusal(new_path)) is not None:
+        return f"Not renaming into {new_path}: {reason}."
+    return None
 
 
 def _replace_refusal(new_path: str, original: str | None, source: str | None) -> str | None:
     """Why the folder at new_path must never be replaced by the rename, or None if the user may choose to."""
-    if cfg.directory.protects(new_path):
-        return f"Not renaming into {new_path}: it is in library_dirs, or holds one."
+    if (refusal := _rename_refusal(new_path)) is not None:
+        return refusal
     if not os.path.isdir(new_path):
         return None
     # The album this run's copy was made from, already under the new name: replacing it would delete it.
-    if original is not None and os.path.samefile(new_path, original):
+    if original is not None and os.path.isdir(original) and os.path.samefile(new_path, original):
         return (
             f"Not replacing {new_path}: it is the album this run works on a copy of. "
             "Rename it, or give this album another name. "
@@ -342,6 +441,9 @@ async def remove_source_folder(
         return
     if cfg.directory.protects(source):
         click.secho(f"Not removing {source}: it is in library_dirs, or holds one.", fg="yellow")
+        return
+    if (reason := placement.data_directory_refusal(source)) is not None:
+        click.secho(f"remove_source_dir is on, but {source} is kept: {reason}.", fg="yellow")
         return
     if not uploaded:
         click.secho(f"remove_source_dir is on, but {source} is kept: nothing was uploaded.", fg="yellow")

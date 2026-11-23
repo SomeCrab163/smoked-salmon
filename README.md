@@ -237,8 +237,32 @@ salmon up "/app/.music/path/to/album" -s WEB
      ```
 
 - **Hardlinks**  
-  With `hardlinks = true` (the default), salmon hardlinks the release into `download_directory` instead of copying it. A hardlink cannot cross mounts, even two bind mounts of the same disk, so point `download_directory` at a folder inside the music mount (e.g. `/app/.music/seeding`). Otherwise salmon falls back to a full copy.
+  With `hardlinks = true` (the default), salmon hardlinks the release into `download_directory` instead of copying it. A hardlink cannot cross mounts, even two bind mounts of the same disk, so point `download_directory` at a folder inside the music mount (e.g. `/app/.music/seeding`). Otherwise salmon falls back to a full copy. When any tracker has a `download_directory` of its own, `salmon up` and `salmon cross-upload` ask whether to copy instead (with `-yyy` they copy and say so); `salmon tag` still copies without asking.
   An album whose files already have another hardlink, or that is or holds a symlink (for example a folder your torrent client seeds, hardlinked into your music folder), is never retagged in place: `salmon up` and `salmon tag` work on a real copy, which takes the album's size in disk space, and `salmon compress` and the integrity check's sanitize refuse it.
+
+- **A folder per tracker**  
+  Give each tracker its own `download_directory` (see [A folder per tracker](#-a-folder-per-tracker)) inside **one** mount, or salmon can't hardlink between them:
+
+  ```bash
+  -v /srv/data:/data
+  ```
+
+  with `/data/red` and `/data/ops` in the config. `-v /srv/data/red:/data/red -v /srv/data/ops:/data/ops` does not work, even on the same disk. Check that each folder is inside a mount: salmon creates a missing one, and one that is not mounted is created inside the container and lost with it.
+  If your torrent client sees the folders under other paths, use one seedbox per tracker, each with `trackers` and `directory` set:
+
+  ```toml
+  [[seedbox]]
+  name = "client RED"
+  trackers = ["RED"]
+  directory = "/downloads/red"  # the path as the client sees it
+  torrent_client = "qbittorrent+http://username:password@qbittorrent:8080"
+
+  [[seedbox]]
+  name = "client OPS"
+  trackers = ["OPS"]
+  directory = "/downloads/ops"
+  torrent_client = "qbittorrent+http://username:password@qbittorrent:8080"
+  ```
 
 - **.torrent Directory Mapping**  
   Depending on how you've set `dottorrents_dir` in your `config.toml`, you may need to map an additional directory for `.torrent` file output. Add:
@@ -333,7 +357,8 @@ salmon up /data/path/to/album -s WEB -g GROUP_ID --skip-flac-upload
 ```
 This only works from a lossless FLAC. The album folder is never modified, since it is most likely the
 one seeding that FLAC: salmon copies it into `download_directory/.salmon-staging`, works on the copy,
-and removes the copy when the run ends. The transcodes land in `download_directory` as usual.
+and removes the copy when the run ends. The transcodes land in `download_directory` as usual, or in the tracker's
+own one when it has one.
 
 The transcode descriptions link to the group's FLAC in this release's edition (same media, encoding,
 year and edition title, as reviewed; the catalogue number is not compared, since sites and uploaders
@@ -367,14 +392,19 @@ salmon cross-upload 123456 RED OPS
 ```
 Give the source torrent's ID, URL or `.torrent` file, up to 5 per run, then the source and target trackers.
 The files must be exactly the torrent's, in `download_directory/<the torrent's folder>` (or give the folder
-with `--path`). salmon first reads each torrent and checks its files, its log and its images, and shows the
+with `--path`). When the source tracker has a `download_directory` of its own, salmon looks there first, then in the
+global one; a folder found there whose files are not the torrent's is refused, not skipped. salmon first reads each torrent and checks its files, its log and its images, and shows the
 plan. The files are checked against the source torrent's pieces, so an album still downloading (its files
 already at full size) is not uploaded: for an ID or URL, salmon downloads the source `.torrent` once (through
 the tracker's API with its API key, otherwise with its session cookie; never with a freeleech token). When pieces differ, salmon says how many and asks whether to go on (default no;
 `-yyy` stops). From DIC, only a `.torrent` file INPUT gets this check; by ID or URL its files are checked
 by size only, and the plan says so. Then, for each release, it checks the target for duplicates as `up` does and uploads it with the
-source's group and torrent data. The album folder is never changed: the new torrent seeds from the same files,
-and a seedbox only gets the new torrent, not another copy. `--dry-run` reads from both trackers and sends
+source's group and torrent data. The album folder is never changed. The new torrent seeds from the same files, or,
+when any tracker has a `download_directory` of its own, from the album hardlinked or copied into the target's folder
+(the plan shows where). A release whose folder there is declined is skipped, and the command then exits with 1. A
+conversion that you keep from being overwritten at "Delete it and re-transcode?" (or that `-yyy` keeps) is left out
+without changing the exit status, as is one that can't be made. One whose upload fails stops the run, with 1.
+An rclone seedbox only gets the new torrent, not another copy. `--dry-run` reads from both trackers and sends
 nothing. A cross-upload to DIC is never marked Self-purchased, Self-rip or Exclusive (it is a re-post, so it is
 not asked), and a 24-bit one gets its sample rate as `up` sends it. DIC's support follows chodeus's fork: its
 rules and answers have not been checked against DIC itself.
@@ -407,6 +437,57 @@ Add `--folder PATH` to upload spectral evidence before final confirmation. Use `
 ### 🌐 Spectral Viewer for `up`
 When `up` reaches spectral review, it starts a small web server and prints the link to the spectrals page (by default `http://localhost:55110/spectrals`); the server stops when you continue. If salmon runs on another machine or in Docker, set `display_host` under `[upload.spectrals_viewer]` to that machine's address so the printed link works. Set `native_spectrals_viewer = true` to open the images locally instead: in a terminal that speaks the Kitty graphics protocol (kitty, Ghostty, WezTerm...), salmon shows them in the terminal itself, a track at a time (← and → move between tracks, Enter goes on, q stops early), and this works over SSH too; elsewhere it opens feh (or, without feh, your desktop's default image viewer), Quick Look or the default Windows viewer. Set `terminal_spectrals_viewer = false` to always use those. This viewer is separate from `salmon web` below.
 
+### 📂 A folder per tracker
+By default every tracker seeds from `download_directory`. To give a tracker a folder of its own:
+```toml
+[directory]
+download_directory = "/data"
+hardlinks = true
+
+[tracker.red]
+download_directory = "/data/red"
+
+[tracker.ops]
+download_directory = "/data/ops"
+```
+A tracker without the key uses the global folder, and with no key set nothing changes. With one set:
+* `salmon up /data/in/Album -t RED,OPS` renames the album into `/data/red`, the first tracker's, then makes the same
+  folder in `/data/ops` just before the OPS upload. `salmon cross-upload` makes it in the target's folder.
+* Those folders are hardlinks, or copies with `hardlinks = false`. An album in `library_dirs` is always copied. Where
+  a link can't be made, salmon asks whether to copy, once for each folder it makes (default yes).
+* Where `salmon up` or `salmon cross-upload` puts an album or a finished conversion, a folder already there is never
+  merged. salmon asks to replace it (default no). It then moves that folder to a hidden `.salmon-replaced-*` name
+  beside it, puts it back if the new one can't be put in place, and deletes it once the new one is.
+  If you keep it, that tracker is skipped; for the first tracker, the run stops. `-yyy` never replaces. So a retry
+  after a failed upload finds the folder the last run made, and asks.
+* That replace is refused when the folder is or holds a mount point, or when anything in it changed while salmon
+  asked or copied (a media server writing into it counts). One that changes as it is moved is kept under the hidden
+  name, and salmon says so. The old folder is also under that name if salmon is killed in between or can't delete all
+  of it. A kill, or a disk that stops taking writes, can lose the note of how a converted folder was made.
+* Ctrl-C (Cancel in salmon web) before the new folder is moved in replaces nothing. During a copy it takes effect
+  when the copy ends: press Ctrl-C again to stop at once.
+* The album is renamed into the first tracker's folder even when that tracker then refuses it (its files, its
+  Do-Not-Upload list, or a failed dupe search), and the later trackers' folders are made from it. That folder then
+  has no torrent seeding it: to avoid that, put a tracker that takes the release first with `-t`.
+* That replace never takes the album a run started from, or a folder that is or holds one of these directories. To
+  upload to the tracker whose folder the album is already in, put it first with `-t`, or use `salmon cross-upload`.
+* Two other questions delete as soon as you say yes, with nothing moved aside: `salmon tag`'s "replace it?" and a
+  conversion's "Delete it and re-transcode?". The second can name the album the run started from, or another release
+  of the same cross-upload, when that album has the conversion's name: read the path before you say yes.
+* Conversions are made once, in the folder of the first tracker that uploads them, and are known by the album they
+  were made from. Started on another tracker's copy of that album, salmon doesn't take them for that album's and
+  says to remove them: don't, if they seed. Start from the first tracker's folder.
+* A local seedbox without a `directory` gets the tracker's folder as save path. One with a `directory` can't serve
+  trackers with different folders: salmon refuses that config at start.
+* `remove_source_dir` keeps the album when a tracker was skipped over a folder that is the album, holds it, or is or
+  holds a symlink into it. It only looks at the folders trackers were skipped over, and not for symlinks in a whole
+  download directory: any other symlink to the album leads nowhere once it is removed. Neither it nor
+  `[d]elete music folder` ever deletes one of these directories or a folder that holds one.
+* `salmon tag`, and `salmon transcode` and `salmon downconv` run on their own, still use the global folder where
+  they used it before.
+* The folder is created on first write. It must not be inside a `library_dirs` entry or hold one, nor be inside
+  `tmp_dir` with `clean_tmp_dir` on.
+
 ### 🖥️ salmon web
 `salmon web` is salmon in your browser. Each page starts the same code as the matching CLI command, so it does the
 same checks, asks the same questions (as questions in the page) and sends the same requests. It offers nothing the
@@ -415,8 +496,8 @@ CLI cannot do.
 The pages:
 * **Dashboard** – the salmon version, which command line tools (`flac`, `sox`, `lame`, ...) are installed, free space
   in your folders, and a button for the tracker connection check. The check runs only when you press it.
-* **Folder browser** – pick an album folder inside `download_directory` or `library_dirs`: one with audio files in
-  it or in its disc folders. A job uses only the folder you select or type, shown with a count of its audio files
+* **Folder browser** – pick an album folder inside `download_directory` (the global one, or a tracker's that exists)
+  or `library_dirs`: one with audio files in it or in its disc folders. A job uses only the folder you select or type, shown with a count of its audio files
   before you start; a folder a job would refuse says why, and Start stays off. Browse opens at the folder in the
   box, else at the last folder you browsed.
 * **Upload** – `salmon up`, with its options and dry run.
@@ -503,18 +584,31 @@ Also under `[web]`:
 * `allowed_hosts` – the names or addresses your browser uses to reach salmon web, besides `localhost` and the bind
   address. A request with any other `Host` is refused. Example: `allowed_hosts = ["seedbox.lan", "192.168.1.20"]`.
 * `max_jobs` – how many jobs run at once (default 2). The others wait in line. Only one job at a time works on a
-  given album folder.
+  given album folder. With per-tracker folders, a job also claims each folder it places or converts into, until it
+  ends. The claim is refused when another running job was started on that folder, one inside it or one holding it, or
+  claimed one: that tracker, release or conversion is skipped (and the job doesn't count as done), or for an upload's
+  first tracker, the run stops. A waiting job whose folder was replaced fails when its turn comes, before it does
+  anything: start it again.
+  The claim has limits. A job started later on the claimed folder waits, but one started on a folder inside or holding
+  it doesn't, and can find that album half written. A claim doesn't see tag jobs' renames or image jobs, and the
+  steps that remove a folder after an upload don't check it. On a slow or hung network share checking a claim, like
+  the check at Start, stalls every job: a tracker request under way can then time out, and an upload end with its
+  outcome unknown though the tracker took it.
 
 **Safety.**
 * salmon web speaks plain HTTP. On any address but `127.0.0.1`, your token and login cookie cross the network in
   clear. Reach it through a reverse proxy that does TLS and passes the `Host` header on, through an SSH tunnel, or
   over a VPN, unless you trust the whole network. Do not put it on the open internet.
-* The browser can list, and start jobs on, folders inside `download_directory` and `library_dirs` only.
+* The browser can list, and start jobs on, folders inside `download_directory`, each tracker's own
+  `download_directory` that exists, and `library_dirs` only. Everything in those folders is visible to anyone with
+  the web token, so don't set a tracker's to a broad folder such as `/srv`. A tracker's folder, or one that holds it,
+  is never itself an album. One inside a `.torrent` or seedbox folder can't be used from the web.
 * A job is refused on a folder that holds a symlink anywhere in it (or a Windows junction), since the copy salmon
   uploads from and the torrent would take what the link leads to, and on a folder of `.torrent` files or a local
   seedbox's, or one that holds one. Hardlinks are fine. `salmon up` follows links, as before.
 * A library album is never changed in place, nor is an album that shares files with another folder through a hardlink.
-  Jobs that retag, rename or delete work on a copy in `download_directory`.
+  Jobs that retag, rename or delete work on a copy in `download_directory`, which an upload then renames into the
+  first tracker's folder.
 * The web sends the same tracker requests as the CLI, under the same per-account rate limit, shared by all running
   jobs. The web adds no retries of its own.
 * When a request that changes something may have reached the tracker but salmon did not get the answer, the job ends

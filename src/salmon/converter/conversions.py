@@ -249,18 +249,82 @@ def carry_conversion(old: str, new: str) -> None:
         forget_conversion(old)
 
 
+def copy_record(old: str, new: str) -> None:
+    """Make the record of new, a folder just copied from old, old's: none if old has none, whatever was left there.
+
+    Raises:
+        OSError: old's record could not be read, or new's could not be written or removed. new's is then as it was.
+    """
+    facts = conversion_of(old)
+    if facts is None:
+        _remove_record(new)
+    else:
+        record_conversion(new, **_without_output(facts))
+
+
+class RecordSwap:
+    """dest's record while a placement puts a copy of another folder at dest: at no moment is it another folder's.
+
+    The record there is set aside, under the name `aside` (dest's folder's while that is replaced), before any folder
+    moves, and the new one is written once the new folder is in. An undo withdraws the new one before any folder
+    moves back, and only then puts back the one set aside. So a kill between two steps leaves no record, never a
+    false one.
+
+    Where both names lead to one record (record folders linked together), that is src's and stays as it is.
+    """
+
+    def __init__(self, src: str, dest: str, aside: str) -> None:
+        self._src, self._dest, self._aside = src, dest, aside
+        self._writing = False
+        self._shared = False
+        with contextlib.suppress(OSError):  # None there, so none shared
+            self._shared = os.path.samefile(_sidecar(src), _sidecar(dest))
+
+    def set_aside(self) -> None:
+        sidecar = _sidecar(self._dest)
+        if not self._shared and os.path.lexists(sidecar) and _changeable(sidecar):
+            os.replace(sidecar, _sidecar(self._aside))
+
+    def copy_in(self) -> None:
+        if self._shared:
+            return
+        self._writing = True  # First: an interrupt can come as the write returns
+        copy_record(self._src, self._dest)
+
+    def withdraw(self) -> None:
+        # Only one there: removing none fails where the record folder can't be made, which is what stopped the write.
+        if self._writing and os.path.lexists(_sidecar(self._dest)):
+            _remove_record(self._dest)
+
+    def put_back(self) -> None:
+        held = _sidecar(self._aside)
+        if os.path.lexists(held):
+            os.replace(held, _sidecar(self._dest))
+
+    def discard(self) -> None:
+        if os.path.lexists(_sidecar(self._aside)):
+            forget_conversion(self._aside)
+
+
 def forget_conversion(folder: str) -> None:
     """Remove the record of a folder that is gone. Nothing is removed where record_conversion writes nothing."""
-    sidecar = _sidecar(folder)
-    record_dir = os.path.dirname(sidecar)
-    if cfg.directory.protects(record_dir) or cfg.directory.protects(os.path.dirname(record_dir)):
-        return
     try:
-        os.remove(sidecar)
-    except FileNotFoundError:
-        pass
+        _remove_record(folder)
     except OSError as e:
-        click.secho(f"Could not remove the conversion record {sidecar}: {e}", fg="yellow")
+        click.secho(f"Could not remove the conversion record {_sidecar(folder)}: {e}", fg="yellow")
+
+
+def _remove_record(folder: str) -> None:
+    sidecar = _sidecar(folder)
+    if not _changeable(sidecar):
+        return
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(sidecar)
+
+
+def _changeable(sidecar: str) -> bool:
+    record_dir = os.path.dirname(sidecar)
+    return not (cfg.directory.protects(record_dir) or cfg.directory.protects(os.path.dirname(record_dir)))
 
 
 def _usable(data: Any, folder: str) -> bool:

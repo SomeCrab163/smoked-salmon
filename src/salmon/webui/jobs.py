@@ -1,11 +1,13 @@
 """salmon web's jobs: each in a worker thread with an event loop of its own (ADR 0004, section 1).
 
 A step that blocks (hashing a torrent, copying an album, waiting for an answer) stalls its own job only, while the
-server's loop goes on serving, and sending every job's tracker requests (see ``trackers.account``). At most
+server's loop goes on serving, and sending every job's tracker requests (see ``trackers.account``). The exceptions
+read the disk on that loop, so a slow or hung share stalls them all: Start's checks and ``_claim``'s comparison. At most
 ``[web] max_jobs`` jobs run at once; the others wait their turn in the order they came, and a job waits while
 another works on the same album folder, the folder it was started on or one it found once running
-(``claim_folder``). A question left unanswered for 30 minutes stops its job. Jobs and their history live in memory
-only, and so many of them: the oldest finished jobs are dropped.
+(``claim_folder``, ``claim_destination``). With a tracker download_directory set, a job that finds another folder in
+place of the one it was started on fails (``StartFolder``). A question left unanswered for 30 minutes stops its job.
+Jobs and their history live in memory only, and so many of them: the oldest finished jobs are dropped.
 
 Everything about a job is changed on the server's loop: its thread hands each change over. Every event goes through
 the egress filter where it is made, so what is kept and sent holds no secret.
@@ -34,12 +36,14 @@ from typing import Any, Literal
 import asyncclick as click
 import msgspec
 
-from salmon import cfg, dryrun, interaction, prepared, ssrf
+from salmon import cfg, dryrun, interaction, placement, prepared, ssrf
+from salmon.config.validations import holds
 from salmon.errors import UnknownOutcomeError
 from salmon.prepared import Prepared
 from salmon.webui import output
 from salmon.webui.egress import Redactor
 from salmon.webui.interaction import NoAnswerError, WebInteraction
+from salmon.webui.start_folder import StartFolder
 
 # A job waiting its turn is "queued", or while its preparation runs "preparing", then "ready" (see JobKind.prepare).
 Status = Literal["queued", "preparing", "ready", "running", "waiting", "done", "failed", "cancelled", "unknown_outcome"]
@@ -53,6 +57,10 @@ UNKNOWN_OUTCOME = "The request may have reached the tracker: check the site befo
 # Finished jobs kept, oldest dropped first; jobs waiting their turn at most.
 MAX_FINISHED_JOBS = 100
 MAX_QUEUED_JOBS = 100
+FOLDER_REPLACED = (
+    "The folder was replaced or removed while the job waited, so nothing was done: look at what is there now, and "
+    "start it again."
+)
 # Lines of a job's log kept, oldest dropped first.
 MAX_LOG_LINES = 5000
 # Live connections (browser tabs) at once, and events waiting for a slow one before it is cut off.
@@ -152,6 +160,8 @@ class Job:
         self.shown_params = shown_params
         self.title = title
         self.folder = folder
+        # The folder as it was at Start, with a tracker download_directory set: only then does a placement replace one.
+        self.started_on = StartFolder(folder) if folder and cfg.per_tracker_directories() else None
         self.dry_run = dry_run
         self.assume_defaults = assume_defaults
         self.status: Status = "queued"
@@ -178,7 +188,8 @@ class Job:
         self._answer: concurrent.futures.Future[Any] | None = None
         # The folders the job made with own_folder, resolved: removed with its spectrals.
         self._own_folders: list[str] = []
-        # The album folders the job claimed once running (claim_folder), resolved; changed on the server's loop.
+        # The folders the job claimed once running (claim_folder, claim_destination), resolved; changed on the
+        # server's loop.
         self._claimed: set[str] = set()
         # What its preparation made (JobKind.prepare), once one started; and the preparation's loop and task, from its
         # thread, while it runs.
@@ -192,6 +203,10 @@ class Job:
     def holds(self, folder: str) -> bool:
         """Whether the job works on the album folder (resolved): the one it was started on, or one it claimed."""
         return folder == self.folder or folder in self._claimed
+
+    def overlaps(self, folder: str) -> bool:
+        """Whether a folder the job works on is `folder`, is in it or holds it, however either is spelled."""
+        return any(holds(held, folder) or holds(folder, held) for held in (self.folder, *self._claimed) if held)
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -307,6 +322,26 @@ async def claim_folder(folder: str) -> str | None:
     claimed: concurrent.futures.Future[str | None] = concurrent.futures.Future()
     manager._call(manager._claim, job, os.path.realpath(folder), claimed)
     return await asyncio.wrap_future(claimed)
+
+
+async def claim_destination(folder: str) -> str | None:
+    """Claim a folder the running job may replace, or converts into, until it ends (``placement.claiming``).
+
+    Unlike ``claim_folder``, it is refused also for another job's folder inside it or holding it: replacing it would
+    delete what that job works on. It sees the running jobs as they are then. From then on a job started on that
+    folder itself waits, as for any claim, but not one started on a folder inside or holding it.
+
+    Returns:
+        None once the job holds the folder, or when no salmon web job runs here. Otherwise why not.
+    """
+    job, manager = _running_job.get(), _running_manager.get()
+    if job is None or manager is None:
+        return None
+    claimed: concurrent.futures.Future[str | None] = concurrent.futures.Future()
+    manager._call(manager._claim, job, os.path.realpath(folder), claimed, True)
+    if (holder := await asyncio.wrap_future(claimed)) is None:
+        return None
+    return f"another job works on it, in it or on a folder holding it ({holder}): try again once that job has ended"
 
 
 def _remove_own_folders(folders: list[str]) -> None:
@@ -655,6 +690,12 @@ class JobManager:
                 return "cancelled", None, None
             job._loop = asyncio.get_running_loop()
             job._task = asyncio.current_task()
+        # Now that it runs, no claim can take the folder from it: before, one saw only the running jobs.
+        if job.started_on is not None:
+            replaced = job.started_on.is_another()
+            job.started_on.close()
+            if replaced:
+                return "failed", FOLDER_REPLACED, None
         _running_job.set(job)
         _running_manager.set(self)
         lines = output.Lines(lambda line, err: self._call(self._log, job, line, err))
@@ -668,6 +709,7 @@ class JobManager:
                 # The URLs a job fetches come from the browser and from store pages: public addresses only.
                 ssrf.public_only(),
                 prepared.using(job.prepared),
+                placement.claiming(claim_destination),
             ):
                 try:
                     result = await job.kind.run(job.params)
@@ -733,8 +775,11 @@ class JobManager:
             job.status = "running"
         self._publish({"event": "answered", "job_id": job.id, "question_id": question_id, "status": job.status})
 
-    def _claim(self, job: Job, folder: str, claimed: concurrent.futures.Future[str | None]) -> None:
-        holder = next((other for other in self._running if other is not job and other.holds(folder)), None)
+    def _claim(
+        self, job: Job, folder: str, claimed: concurrent.futures.Future[str | None], replacing: bool = False
+    ) -> None:
+        others = (other for other in self._running if other is not job)
+        holder = next((other for other in others if (other.overlaps if replacing else other.holds)(folder)), None)
         if holder is None:
             job._claimed.add(folder)
         # Cancelled: the job stopped waiting, and ends.
@@ -753,6 +798,8 @@ class JobManager:
         job._question_id = None
         job._answer = None
         job.finished_at = _now()
+        if job.started_on is not None:
+            job.started_on.close()  # For a job that never ran
         if job is self._preparing:
             # Its folder goes once the preparation has stopped (_prepared).
             self._stop_preparing(job)

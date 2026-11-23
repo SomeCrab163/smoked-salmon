@@ -17,6 +17,7 @@ from salmon.config.validations import Seedbox
 from salmon.containment import is_within
 from salmon.converter.conversions import forget_conversion
 from salmon.errors import DryRunRefused
+from salmon.placement import data_directory_refusal
 from salmon.uploader import record
 from salmon.uploader.torrent_client import TorrentClient, TorrentClientGenerator
 from salmon.webui import output
@@ -279,7 +280,23 @@ class _Outcome:
     local_path: str
     task_type: str
     folder: str
+    save_path: str  # A local seedbox's, without a directory of its own: the folder of the tracker uploaded to
     ok: bool = False
+
+
+def _local_save_path(seedbox: Seedbox, outcome: _Outcome | None) -> str:
+    """The save path a local seedbox gives its client: its own directory, else the task's tracker's folder."""
+    if seedbox.directory:
+        return seedbox.directory
+    return outcome.save_path if outcome else os.path.abspath(cfg.directory.download_directory)
+
+
+def _in_data_directory(folder: str) -> bool:
+    """Whether folder is inside a download_directory, the global or a tracker's, and neither is nor holds one."""
+    real = os.path.realpath(folder)
+    roots = [os.path.realpath(entry) for entry in cfg.data_directories()]
+    # A tracker's can be in the global one: being inside that must not let a whole tracker's folder go.
+    return any(real != root and is_within(real, root) for root in roots) and data_directory_refusal(real) is None
 
 
 class UploadManager:
@@ -356,7 +373,8 @@ class UploadManager:
                 failed copy of that folder skips this seed. Ignored for a "folder" task, which always uses
                 its own path.
             site_code: Tracker this upload went to. Skips a seedbox whose `trackers` is set and
-                does not contain it; a seedbox with no `trackers` still matches every tracker.
+                does not contain it; a seedbox with no `trackers` still matches every tracker. Its
+                download_directory is a local seedbox's save path, unless that seedbox has a directory.
 
         Raises:
             DryRunRefused: In a dry run, which copies nothing to a seedbox and adds nothing to a client.
@@ -367,6 +385,7 @@ class UploadManager:
             raise ValueError("A seed task needs the folder its torrent was built from.")
         click.secho(f"Preparing upload tasks for: {directory}", fg="cyan")
         task_folder = folder if task_type == "seed" and folder else directory
+        save_path = os.path.abspath(cfg.download_directory_for(site_code))
         torrents = self._folder_torrents.setdefault(task_folder, [])
         if task_type == "seed" and directory not in torrents:
             torrents.append(directory)
@@ -386,7 +405,7 @@ class UploadManager:
             if task in self.tasks:
                 continue
             self._outcomes[(id(seedbox), directory, task_type, task_folder)] = _Outcome(
-                seedbox, directory, task_type, task_folder
+                seedbox, directory, task_type, task_folder, save_path
             )
             if task_type == "seed":
                 self.tasks.append(task)
@@ -447,7 +466,7 @@ class UploadManager:
                     if seedbox.type == "rclone":
                         shell_path = _resolve_shell_path(seedbox.directory, seedbox.extra_args)
                     else:
-                        shell_path = seedbox.directory or os.path.abspath(cfg.directory.download_directory)
+                        shell_path = _local_save_path(seedbox, outcome)
                     added = await _add_to_downloader(
                         client,
                         shell_path,
@@ -490,10 +509,7 @@ class UploadManager:
 
     def _kept_reason(self, folder: str) -> str | None:
         """Why the local copy of a folder must stay, or None when every seedbox has it and seeds it."""
-        download_directory = os.path.realpath(cfg.directory.download_directory)
-        real = os.path.realpath(folder)
-        inside = real != download_directory and is_within(real, download_directory)
-        if not inside or not os.path.isdir(real) or os.path.islink(folder):
+        if not _in_data_directory(folder) or not os.path.isdir(folder) or os.path.islink(folder):
             return "it is not a folder inside download_directory"
         if cfg.directory.protects(folder):
             return "it is a protected folder"
@@ -524,7 +540,7 @@ class UploadManager:
         return None
 
     def remove_local_copies(self, keep_because: str | None = None) -> None:
-        """Remove each folder from download_directory that remove_local_after_copy allows, and report each one.
+        """Remove each folder from its download_directory that remove_local_after_copy allows, and report each one.
 
         With keep_because, the run did not end well (a failed upload, an abort, an error): nothing is removed,
         and each folder is reported kept for that reason.

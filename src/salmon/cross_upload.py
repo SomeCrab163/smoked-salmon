@@ -3,7 +3,10 @@
 The run reads every release's torrent from SOURCE and checks it locally first (the data the form gets, TARGET's
 Do-Not-Upload list, the files on disk, the log, the images), shows the plan, and only then sends anything to TARGET:
 per release, the dupe check as `up` makes it, the upload of the source format, and the conversions asked for. The
-first failure there stops the run, and says what is already up.
+first failure there stops the run, and says what is already up. With a tracker download_directory set, the album is
+first linked or copied into TARGET's: a release whose folder there is declined, or a conversion refused its folder
+by a placement or a claim (``PlacementDeclined``), is skipped, and the run then fails at its end. A conversion kept
+from being overwritten at the re-transcode question, or that couldn't be made, is only left out.
 
 salmon web's cross-upload job runs the same ``run_cross_upload`` as the command, with the same options.
 
@@ -14,9 +17,10 @@ DIC's rules and API answers are is not checked against DIC itself: where it matt
 """
 
 import html
+import os
 import re
 import unicodedata
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,7 +35,7 @@ from bs4 import BeautifulSoup
 from torf import TorfError, Torrent, VerifyContentError
 
 import salmon.trackers
-from salmon import cfg, dryrun, interaction
+from salmon import cfg, dryrun, interaction, placement
 from salmon.checks.do_not_upload import Candidate, do_not_upload_reason
 from salmon.checks.high_rate import sixteen_bit_notice
 from salmon.common import commandgroup, invisible_chars, show_invisible
@@ -52,6 +56,7 @@ from salmon.errors import (
 )
 from salmon.images import HOSTS, image_host_for_tracker
 from salmon.images import red as red_images
+from salmon.placement import PlacedFolders, PlacementDeclined
 from salmon.release_notification import get_version
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.tagger.tags import gather_tags
@@ -252,7 +257,8 @@ class Release:
     "--path",
     "-p",
     type=click.Path(exists=True, file_okay=False),
-    help="The album folder, if it is not download_directory/<the torrent's folder>. One INPUT only.",
+    help="The album folder, if it is not <the torrent's folder> in SOURCE_TRACKER's download_directory or the global "
+    "one. One INPUT only.",
 )
 @click.option(
     "--group-id",
@@ -298,7 +304,8 @@ async def cross_upload(
     """Upload torrents that are on SOURCE_TRACKER to TARGET_TRACKER, from the files on disk.
 
     INPUT is a SOURCE torrent ID, a SOURCE torrent URL, or a SOURCE .torrent file; at most 5. The files must be
-    the torrent's, unchanged, in download_directory (or at --path).
+    the torrent's, unchanged, in SOURCE_TRACKER's download_directory or the global one (or at --path). When any
+    tracker has a download_directory of its own, they are hardlinked or copied into TARGET_TRACKER's.
 
     \b
     Examples:
@@ -333,7 +340,8 @@ async def run_cross_upload(options: CrossUploadOptions, *, claim_folder: FolderC
 
     Args:
         claim_folder: Takes each release's album folder once it is known; a release whose folder it refuses is
-            not cross-uploaded. None claims nothing, as the command, alone at its terminal, needs no lock.
+            not cross-uploaded. None claims nothing, as the command, alone at its terminal, needs no lock. Its folder
+            in TARGET's directory is taken as every placement takes one (``placement.claiming``).
 
     Raises:
         click.UsageError: An INPUT is none of a SOURCE torrent ID, URL or .torrent file. Nothing is sent.
@@ -408,7 +416,8 @@ async def _run(
     """Check every release against SOURCE and the disk, confirm the plan, then upload each to TARGET.
 
     Raises:
-        Stopped: Nothing could be cross-uploaded, SOURCE could not be read, or a step on TARGET failed.
+        Stopped: Nothing could be cross-uploaded, SOURCE could not be read, a step on TARGET failed, or a release or
+            conversion was skipped with PlacementDeclined (once the others are done).
     """
     group_id = options.group_id
     releases: list[Release] = []
@@ -446,9 +455,17 @@ async def _run(
     with scratch as scratch_dir, dryrun.writing_into(scratch_dir):
         seedbox = UploadManager(cross_upload=True)
         uploaded: list[str] = []
+        placed = PlacedFolders(*(str(release.path) for release in releases))
+        skipped: list[str] = []
         try:
             for release in releases:
-                await _upload(release, source, target, seedbox, uploaded, group_id=group_id)
+                try:
+                    await _upload(release, source, target, seedbox, uploaded, group_id=group_id, placed=placed)
+                except PlacementDeclined as declined:
+                    # Only this release, and not a tracker failure: the others go on.
+                    click.secho(f"\nSkipping {release.label}: {declined}", fg="red", bold=True)
+                    skipped.append(release.label)
+                skipped.extend(f"{release.label} ({name})" for name in placed.take_declined_conversions())
         except (CrossUploadRefused, RequestError, UploadError, click.Abort) as error:
             reason = str(error) or "aborted"
             click.secho(f"\nStopping: {reason}. Nothing more is uploaded.", fg="red", bold=True)
@@ -459,6 +476,11 @@ async def _run(
             raise Stopped(reason) from error
         finally:
             await seedbox.execute_upload()
+        if skipped:
+            # A no is no failure of TARGET, but a script must not see 0.
+            reason = f"Not cross-uploaded, for want of their folder for {target.site_string}: {', '.join(skipped)}."
+            click.secho(f"\n{reason}", fg="red", bold=True)
+            raise Stopped(reason)
 
 
 # Phase B: SOURCE reads and local checks, nothing sent to TARGET.
@@ -500,7 +522,7 @@ async def _prepare(
             f"{NO_DUPE_SEARCH} Not with -yyy (upload.yes_all): give --group-id, or run without -yyy, "
             "and with upload.yes_all off"
         )
-    release.path = _release_path(response, options.path)
+    release.path = _release_path(response, options.path, source.site_code)
     if claim_folder is not None and (refusal := await claim_folder(release.path)):
         raise CrossUploadRefused(refusal)
     _verify_release_files(response, release.path, target)
@@ -765,8 +787,11 @@ def _artists(group: dict[str, Any], target: "BaseGazelleApi") -> list[tuple[str,
     return artists
 
 
-def _release_path(response: dict[str, Any], path: str | None) -> Path:
-    """Find the album folder: --path, or download_directory/<the torrent's folder>, symlinks resolved.
+def _release_path(response: dict[str, Any], path: str | None, source_code: str) -> Path:
+    """Find the album folder, symlinks resolved: --path, else <the torrent's folder> in SOURCE's download_directory,
+    else in the global one.
+
+    The first folder there is wins: one whose files then aren't the torrent's is refused, and no other is tried.
 
     Raises:
         CrossUploadRefused: If the folder is not there, is named otherwise, or resolves out of where it must be.
@@ -776,18 +801,36 @@ def _release_path(response: dict[str, Any], path: str | None) -> Path:
         raise CrossUploadRefused("it is a torrent of a single file, with no folder: not supported")
     if name in (".", "..") or "/" in name or "\\" in name:
         raise CrossUploadRefused(f"its folder name {name!r} is not a folder name")
-    if path is not None:
-        folder = Path(path).expanduser().resolve()
-    else:
-        root = Path(cfg.directory.download_directory).expanduser().resolve()
+    given = None if path is None else [Path(path).expanduser().resolve()]
+    candidates = given or _folders_to_try(name, source_code)
+    tried: list[str] = []
+    for folder in candidates:
+        if folder.name != name:
+            raise CrossUploadRefused(f"the folder is {folder}, but the torrent's folder is named {name!r}")
+        if folder.is_dir():
+            return folder
+        tried.append(str(folder))
+    raise CrossUploadRefused(f"the files are not at {' or at '.join(tried)}: give the album folder with --path")
+
+
+def _folders_to_try(name: str, source_code: str) -> Iterator[Path]:
+    """Where the torrent's folder may be, without --path, each checked as it is reached.
+
+    Raises:
+        CrossUploadRefused: One resolves out of the directory it is looked for in.
+    """
+    # A dict, for SOURCE's first and the global one once when they are the same.
+    roots = {
+        Path(cfg.download_directory_for(source_code)).expanduser().resolve(): (
+            f"tracker.{source_code.lower()}.download_directory"
+        )
+    }
+    roots[Path(cfg.directory.download_directory).expanduser().resolve()] = "download_directory"
+    for root, setting in roots.items():
         folder = (root / name).resolve()
         if folder.parent != root:
-            raise CrossUploadRefused(f"{root / name} resolves to {folder}, outside download_directory")
-    if folder.name != name:
-        raise CrossUploadRefused(f"the folder is {folder}, but the torrent's folder is named {name!r}")
-    if not folder.is_dir():
-        raise CrossUploadRefused(f"the files are not at {folder}: give the album folder with --path")
-    return folder
+            raise CrossUploadRefused(f"{root / name} resolves to {folder}, outside {setting}")
+        yield folder
 
 
 def _file_list(torrent: dict[str, Any]) -> dict[str, int]:
@@ -1242,6 +1285,8 @@ def _print_plan(
         click.echo(f"{number}. {artists} - {data['title']} ({years}), {data['media']}")
         click.echo(f"   from {source.base_url}/torrents.php?torrentid={torrent['id']}")
         click.echo(f"   files: {release.path}")
+        if dest := placement.destination(str(release.path), target.site_code):
+            click.echo(f"   to: {dest}{_already_there(dest)}")
         click.echo(f"   uploads: {', '.join(formats)}")
         gets, posts, source_gets = most_requests(release, source, target, group_id)
         images = len({url for _, url in release.rehost})
@@ -1266,6 +1311,13 @@ def _print_plan(
         )
 
 
+def _already_there(dest: str) -> str:
+    """What the plan adds of a destination that exists."""
+    if not os.path.lexists(dest):  # Not Path.exists, which raises for a directory salmon may not read
+        return ""
+    return " (already exists: salmon asks before replacing it, and with -yyy skips the release)"
+
+
 # Phase D: TARGET.
 
 
@@ -1277,10 +1329,15 @@ async def _upload(
     uploaded: list[str],
     *,
     group_id: int | None,
+    placed: PlacedFolders,
 ) -> None:
     """Dupe-check one release on TARGET, upload it, then its conversions. Adds each URL to uploaded.
 
+    The torrent is made and seeded from the release's folder in TARGET's directory (``placed``). The release's own
+    folder is only read, also for its conversions, and never written to.
+
     Raises:
+        PlacementDeclined: Its folder in TARGET's directory was declined, before its upload: to skip the release.
         RequestError, UploadError, click.Abort, CrossUploadRefused: To stop the run.
     """
     data = dict(release.data)
@@ -1304,21 +1361,21 @@ async def _upload(
         data["groupid"] = group_id
 
     await target.ensure_authenticated()
-    torrent_path, torrent = generate_torrent(target, str(release.path), normalize=False)
-    files = await compile_files(str(release.path), torrent, {"source": release.torrent["media"]})
+    folder = await placed.place(str(release.path), target.site_code)
+    torrent_path, torrent = generate_torrent(target, folder, normalize=False)
+    files = await compile_files(folder, torrent, {"source": release.torrent["media"]})
     if not dryrun.active():
         click.secho(f"Uploading {release.path.name} to {target.site_string}...", fg="yellow")
     torrent_id, group_id = await target.upload(dict(data), files)
     if release.lossy_report is not None:
         # Sent once; a report TARGET does not take is printed for reporting by hand, and the upload stands.
         await report_lossy_master(target, torrent_id, None, None, data["media"], release.lossy_report)
-    url = finish_upload(
-        target, str(release.path), torrent_id, torrent_path, torrent, data["format"], seedbox, copy_folder=False
-    )
+    url = finish_upload(target, folder, torrent_id, torrent_path, torrent, data["format"], seedbox, copy_folder=False)
     uploaded.append(url)
-    if seedbox.tasks and release.path.parent != Path(cfg.directory.download_directory).resolve():
+    seeded_in = Path(folder).resolve().parent
+    if seedbox.tasks and seeded_in != Path(cfg.download_directory_for(target.site_code)).resolve():
         click.secho(
-            f"The files are in {release.path.parent}: check that the seedbox's torrent client seeds from there.",
+            f"The files are in {seeded_in}: check that the seedbox's torrent client seeds from there.",
             fg="yellow",
         )
 
@@ -1339,6 +1396,7 @@ async def _upload(
         uploaded,
         edition=edition,
         flac_uploaded=True,
+        placed=placed,
     )
 
 
@@ -1517,6 +1575,7 @@ async def _upload_conversions(
     *,
     edition: dict[str, Any],
     flac_uploaded: bool,
+    placed: PlacedFolders,
 ) -> None:
     """Upload the conversions asked for that the group does not have yet, with master's converters and forms.
 
@@ -1554,4 +1613,5 @@ async def _upload_conversions(
         uploaded=uploaded,
         # The limit the album folder was held to: a cross-upload goes to TARGET alone.
         max_path_length=target.TAG_RULES.max_path_length,
+        placed=placed,
     )

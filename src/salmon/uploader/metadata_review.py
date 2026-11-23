@@ -75,7 +75,7 @@ async def edit_metadata(
         skip_initial_review: Skip the first manual metadata review before AI review.
         apply_ai_suggestions: Automatically apply AI review suggestions when present.
         rename_into: The directory the renamed folder goes into, instead of download_directory.
-        original: The folder the user gave, when path is a copy of it, for the folder rename's remove_source_dir note.
+        original: The folder the user gave, when path is a copy of it: no pass of the folder rename may replace it.
         max_path_length: The longest in-torrent path the folder structure check allows.
         rls_type_hint: The release type prompt's default, when the release type has to be asked.
         offer_other_results: Offer [b]ack to the metadata results at the reviews before the files are first written.
@@ -84,7 +84,8 @@ async def edit_metadata(
         A tuple of (path, metadata, tags, audio_info) after editing is complete.
 
     Raises:
-        click.Abort: If a scene release fails the integrity check, or a file does not decode.
+        click.Abort: If a scene release fails the integrity check, a file does not decode, or the rename into a
+            tracker's directory was declined (see rename_folder).
         PickOtherResults: If the user went back to the metadata results, before anything was written.
     """
     given = path
@@ -131,18 +132,18 @@ async def edit_metadata(
             except UploadError as e:
                 raise UploadError(f"{e} Rerun without -c.") from e
         renamed = await rename_folder(path, metadata, auto_rename, parent=rename_into, original=original, source=given)
-        if renamed != path:
-            original = None  # A re-run renames the renamed folder, which is no longer the copy of the original.
-            if (
-                path != given
-                and cfg.upload.formatting.remove_source_dir
-                and os.path.isdir(path)
-                and not os.path.samefile(path, renamed)
-                and not cfg.directory.protects(path)
-            ):
-                # Made by an earlier pass of this loop, not the user's: the source itself is removed when the run ends.
-                shutil.rmtree(path)
-                carry_conversion(path, renamed)
+        if (
+            renamed != path
+            and cfg.upload.formatting.remove_source_dir
+            and os.path.isdir(path)
+            # By the folder, not its name: a pass that renames the album into itself can spell it another way.
+            and not _is_folder(path, given)
+            and not os.path.samefile(path, renamed)
+            and not cfg.directory.protects(path)
+        ):
+            # Made by an earlier pass of this loop, not the user's: the source itself is removed when the run ends.
+            shutil.rmtree(path)
+            carry_conversion(path, renamed)
         path = renamed
         if not metadata["scene"]:
             await rename_files(path, tags, metadata, auto_rename, spectral_ids, source, tracks_by_file=tracks_by_file)
@@ -176,6 +177,11 @@ async def edit_metadata(
     tags = gather_tags(path)
     audio_info = gather_audio_info(path)
     return path, metadata, tags, audio_info
+
+
+def _is_folder(path: str, folder: str) -> bool:
+    """Whether path is folder, however either is spelled."""
+    return path == folder or (os.path.isdir(folder) and os.path.samefile(path, folder))
 
 
 async def recheck_dupe(gazelle_site, searchstrs, metadata):

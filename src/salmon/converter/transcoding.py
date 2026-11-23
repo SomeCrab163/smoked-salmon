@@ -29,6 +29,7 @@ from salmon.converter.conversions import (
     source_of,
 )
 from salmon.errors import UploadError
+from salmon.placement import claim_output, data_directory_refusal
 from salmon.release_notification import get_version
 from salmon.tagger.audio_info import gather_audio_info
 from salmon.tagger.cover import MAX_PICTURES_AND_PADDING
@@ -546,12 +547,19 @@ async def transcode_folder(
 
     Returns:
         Path to the newly created transcoded directory.
+
+    Raises:
+        PlacementDeclined: Another salmon web job works on the output (see placement.claim_output).
     """
     _validate_lossless(path)
     new_path = _build_output_path(path, bitrate, output_dir)
     # Resolved, so a symlink on the way cannot carry the output, or the removal of an incomplete one, into a library.
     if cfg.directory.protects(new_path):
         raise UploadError(f"Not transcoding into {new_path}: it is in library_dirs, or holds one.")
+    if (reason := data_directory_refusal(new_path)) is not None:
+        raise UploadError(f"Not transcoding into {new_path}: {reason}.")
+    # Before anything there is read or written: an output reused is this job's to upload and seed, too.
+    await claim_output(new_path)
 
     # Before the tags are read: a track retagged while the transcode runs then differs from its record.
     fingerprints = source_fingerprints(path, get_audio_files(path))
@@ -581,6 +589,8 @@ async def transcode_folder(
             default=False,
         ):
             raise UploadError(f"Not overwriting existing folder {new_path}.")
+        # Again: a job can have started in it while the question waited.
+        await claim_output(new_path)
         click.secho(
             f"{new_path} exists but appears incomplete, re-transcoding...",
             fg="yellow",

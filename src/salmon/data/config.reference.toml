@@ -9,12 +9,17 @@
 # DIRECTORY SETTINGS
 # ===============================
 [directory]
-# A leading ~ in a folder setting (here, in library_dirs, or in a tracker's dottorrents_dir or
+# A leading ~ in a folder setting (here, in library_dirs, or in a tracker's download_directory, dottorrents_dir or
 # cross_upload_dottorrents_dir) is expanded when the config loads; existence and library_dirs checks use that path.
-# Where to copy files (usually the download/seeding folder for your torrent client)
+# Where to copy files (usually the download/seeding folder for your torrent client). It is also the folder of each
+# tracker without a download_directory of its own (see [tracker.red]).
 # download_directory = '.music'
 
 # Hardlinks are enabled by default, set the option below to false to DISABLE hardlinks (and use standard copy files)
+# With a tracker's download_directory set, this covers the copies between the trackers' folders too. Where a link
+# can't be made (another disk or mount, two bind mounts of one disk included, or a filesystem without links) salmon up
+# and salmon cross-upload then ask whether to copy instead, for each folder they make, default yes. -yyy copies and
+# says so. salmon tag still copies without asking.
 # hardlinks = true
 
 # Curated music folders salmon must never change or delete (e.g. your library). An album inside one is copied
@@ -178,6 +183,15 @@
 # dottorrents_dir = 'path to dir'
 # salmon cross-upload's own folder for this tracker's .torrent files (see directory.cross_upload_dottorrents_dir)
 # cross_upload_dottorrents_dir = 'path to dir'
+# Where this tracker's music data goes and is seeded from. Unset: directory.download_directory. It is created on
+# first write. It must not be inside a library_dirs entry or hold one, nor be inside tmp_dir with clean_tmp_dir on.
+# It may be inside directory.download_directory. salmon up renames the album into the first tracker's folder. Each
+# later tracker's folder, and salmon cross-upload's target folder, gets that album hardlinked or copied, as
+# directory.hardlinks says. A folder already there is never merged by these: salmon asks to replace it (default no;
+# -yyy doesn't replace it). The replaced folder is kept under a hidden .salmon-replaced-* name until the new one is in
+# place. One that is or holds a mount point, or that changed while salmon asked or copied, is not replaced. One that
+# changes as it is moved aside is still replaced, kept under the hidden name, and salmon says so.
+# download_directory = 'path to dir'
 
 # [tracker.ops]
 # session = 'get-from-site-cookie'
@@ -186,6 +200,9 @@
 # dottorrents_dir = 'path to ops dir'
 # salmon cross-upload's own folder for this tracker's .torrent files (see directory.cross_upload_dottorrents_dir)
 # cross_upload_dottorrents_dir = 'path to ops dir'
+# Where this tracker's music data goes. Unset: directory.download_directory. Created on first write, never in or
+# around a library, and linked or copied into as directory.hardlinks says (see [tracker.red]).
+# download_directory = 'path to ops dir'
 
 # [tracker.dic]
 # session = 'get-from-site-cookie'
@@ -194,6 +211,9 @@
 # dottorrents_dir = 'path to dic dir'
 # salmon cross-upload's own folder for this tracker's .torrent files (see directory.cross_upload_dottorrents_dir)
 # cross_upload_dottorrents_dir = 'path to dic dir'
+# Where this tracker's music data goes. Unset: directory.download_directory. Created on first write, never in or
+# around a library, and linked or copied into as directory.hardlinks says (see [tracker.red]).
+# download_directory = 'path to dic dir'
 
 # ===============================
 # SEEDING SETTINGS
@@ -217,18 +237,21 @@
 # torrent_client = ""
 # Save path given to the torrent client. For "rclone", also the folder the release is copied to on the
 # remote (--sftp-path-override in extra_args changes the path given to the client). For "local", leave
-# empty to use download_directory.
+# empty to use the tracker's download_directory, else the global one. A "local" seedbox that sets it can't serve
+# trackers whose download_directory differs: salmon refuses that config. Leave it empty, or use one seedbox per
+# tracker, with trackers set (as when the client sees the folders under other paths, in Docker).
 # directory = ""
 # label = "smoked-salmon" # Label to apply to torrents in download client
 # Label for the torrents salmon cross-upload queues on this seedbox. Unset: label. salmon up keeps label.
 # cross_upload_label = "cross-upload"
 # add_paused = false # If true, add torrents to client in paused state
-# "rclone" only. After salmon up, remove the release folder from download_directory once this seedbox has copied
-# it and added its torrents, and every other seedbox that took it did too. It is kept when a "local" seedbox seeds
-# it, a seedbox failed or was skipped, or a torrent seeds nowhere. It is also kept after a failed or skipped
-# tracker upload or a run that stopped early, and a dry run removes nothing. Leave this off if a torrent client
-# watches dottorrents_dir or otherwise seeds from download_directory, or if you cross-upload later: salmon cross-upload
-# reads the files from download_directory.
+# "rclone" only. After salmon up, remove the release folder from download_directory (a tracker's included: each
+# folder on its own, never the directory itself) once this seedbox has copied it and added its torrents, and every
+# other seedbox that took it did too. It is kept when a "local" seedbox seeds it, a seedbox failed or was skipped, or
+# a torrent seeds nowhere. It is also kept after a failed or skipped tracker upload or a run that stopped early, and
+# a dry run removes nothing. Leave this off if a torrent client watches dottorrents_dir or otherwise seeds from
+# download_directory, or if you cross-upload later: salmon cross-upload reads the files from download_directory, the
+# source tracker's first.
 # remove_local_after_copy = false
 
 
@@ -320,11 +343,13 @@
 # "24bit FLAC 24-96")
 # file_template = "{tracknumber}. {artist} - {title}"
 # true removes the source folder when the run ends, without asking: salmon up once it has uploaded the release from
-# its new name in download_directory, salmon tag once it has renamed it. A run that uploaded nothing, or was aborted
+# its new name in download_directory (the first tracker's), salmon tag once it has renamed it. A run that uploaded nothing, or was aborted
 # after an upload, keeps it, as does a source holding files the folder check deleted from the renamed folder (salmon
 # names them).
 # It never applies to an album in library_dirs, or to a run that works on a copy (--skip-flac-upload,
 # --dry-run), and salmon says so when it keeps the folder.
+# With a tracker's download_directory set, it also keeps the source when a tracker was skipped over a folder that is
+# it, holds it, or is or holds a symlink into it, and never removes a download_directory or a folder holding one.
 # remove_source_dir = false
 # Multi-disc releases: true puts each disc's tracks in its own folder (CD01, CD02; LP01 for vinyl, Part01
 # otherwise). false keeps every track in the release folder, numbered <disc>.<track> (1.01, 2.01) through

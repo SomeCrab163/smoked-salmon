@@ -9,14 +9,17 @@ it sends what the command sends for the same album and answers, every tracker re
 loop (``trackers.account``), and works on a copy of a library album, as the command does. A conversion (transcode,
 downconvert) or a recompression (compress) runs what ``salmon transcode``, ``salmon downconv`` and ``salmon compress``
 run and sends nothing anywhere: a conversion writes where the command puts it (beside the album, or for a library
-album under download_directory), a recompression writes in place and is refused for a library album or an album
+album under download_directory), and with a tracker's download_directory set it claims that folder first, refused
+when another job works on it. A recompression writes in place and is refused for a library album or an album
 sharing files through a link (``rewrite_refusal``). A tag job runs what ``salmon tag`` runs (``tagger.run_tag``), its
 questions asked in the browser: it sends nothing to a tracker, and tags such an album as a copy renamed into
 download_directory, never in place. A cross-upload runs what ``salmon
 cross-upload`` runs (``cross_upload.run_cross_upload``): it reads SOURCE and the album folder, and sends TARGET what
 the command sends for the same releases and answers, through the same request loop; it writes where the command
-writes, never into the album. Each folder is checked by ``paths.album_folder`` before the job is queued, and again
-when it starts, since it may have changed while the job waited its turn.
+writes (a TARGET's own download_directory included, its folder claimed first), never into the album. An album may be
+picked in any tracker's download_directory that exists, never such a directory itself. Each folder is checked by
+``paths.album_folder`` before the job is queued, and again when it starts, since it may have changed while the job
+waited its turn.
 
 The description generator is ``salmon descgen`` for at most 10 release URLs, each matched against the scrapers before
 the job is queued; it scrapes the stores behind the guard for web jobs (``salmon.ssrf``) and returns the BBCode, never
@@ -221,7 +224,7 @@ class CrossUploadParams(msgspec.Struct, forbid_unknown_fields=True):
     # SOURCE_TRACKER and TARGET_TRACKER.
     source: str
     target: str
-    # --path: the album folder, when it is not download_directory/<the torrent's folder>.
+    # --path: the album folder, when it is not <the torrent's folder> in SOURCE's download_directory or the global one.
     path: str | None = None
     group_id: Annotated[int, msgspec.Meta(gt=0)] | None = None
     # --conversions: the kinds to make after the FLAC, none by default.
@@ -709,8 +712,9 @@ async def cross_upload(params: CrossUploadParams) -> dict[str, Any]:
     """What ``salmon cross-upload`` runs, its questions asked in the browser.
 
     The job works on one album folder at a time, as every job does: the path given, else each release's folder from
-    when SOURCE names it until the job ends (``claim_folder``). A release whose folder another running job works on
-    is not cross-uploaded, as one that fails a check is not; a job started on that folder later waits for this one.
+    when SOURCE names it until the job ends (``claim_folder``), and its folder in TARGET's directory from before that
+    may be replaced (``claim_destination``). A release whose folder another running job works on is not
+    cross-uploaded, as one that fails a check is not; a job started on that folder later waits for this one.
 
     Returns:
         SOURCE, TARGET, the torrent IDs, each torrent uploaded (none in a dry run), and whether a seedbox step (a copy,
